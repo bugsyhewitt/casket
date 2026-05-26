@@ -1,0 +1,31 @@
+# casket image-misconfiguration rules.
+# These inspect the image *config* (the merged Dockerfile-equivalent settings)
+# rather than layer file contents. v0.1 covers a small high-value set.
+#
+# Fields:
+#   id / rule:  stable rule identifier (the JSON finding carries this as "rule")
+#   title:      human-readable title
+#   severity:   critical | high | medium | low | info
+#   kind:       which config aspect to inspect — one of:
+#                 running_as_root      (config.User is empty or "root"/"0")
+#                 exposed_port         (any entry in config.ExposedPorts)
+#                 suspicious_env       (env var name matches a secret-ish pattern)
+rules:
+  - id: running_as_root
+    rule: running_as_root
+    title: "Container configured to run as root"
+    severity: high
+    kind: running_as_root
+
+  - id: exposed_port
+    rule: exposed_port
+    title: "Image exposes a network port"
+    severity: low
+    kind: exposed_port
+
+  - id: suspicious_env_var
+    rule: suspicious_env_var
+    title: "Suspicious secret-like environment variable baked into image"
+    severity: medium
+    kind: suspicious_env
+    env_name_regex: "(?i)(secret|token|password|passwd|api[_-]?key|access[_-]?key)"

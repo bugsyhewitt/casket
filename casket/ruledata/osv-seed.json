@@ -1,0 +1,11 @@
+{
+  "_comment": "Bundled offline OSV seed database. Read-only fallback so casket can resolve known-vulnerable fixture/common packages without a live OSV.dev call. Keyed by 'ecosystem|name|version'. This is a tiny curated set for v0.1, NOT a full vuln DB; live OSV.dev queries (cached to disk) cover everything else. Refresh from https://osv.dev as needed.",
+  "PyPI|requests|2.19.0": [
+    {
+      "id": "GHSA-x84v-xcm2-53pg",
+      "aliases": ["CVE-2018-18074"],
+      "summary": "Requests sends Authorization header on cross-origin redirect",
+      "database_specific": {"severity": "MEDIUM"}
+    }
+  ]
+}
