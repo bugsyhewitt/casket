@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "casket"
+version = "0.1.0"
+description = "A daemonless, podman-native container image scanner. No Docker, no daemon, no root."
+readme = "README.md"
+requires-python = ">=3.13"
+license = { file = "LICENSE" }
+authors = [{ name = "bugsyhewitt" }]
+keywords = ["security", "container", "oci", "podman", "scanner", "cve", "secrets"]
+classifiers = [
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Environment :: Console",
+]
+dependencies = [
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+casket = "casket.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/bugsyhewitt/casket"
+
+[tool.setuptools]
+packages = ["casket", "casket.checks", "casket.ruledata"]
+
+[tool.setuptools.package-data]
+"casket.ruledata" = ["*.yaml", "*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

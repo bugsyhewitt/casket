@@ -1,0 +1,30 @@
+# casket credential-leak rules.
+# Each rule scans file *contents* inside image layers for high-confidence
+# secret patterns. Kept deliberately small and high-signal for v0.1 — this is
+# tombstone-style pattern matching, not an exhaustive secrets engine.
+#
+# Fields:
+#   id:       stable rule identifier (snake_case)
+#   title:    human-readable finding title
+#   severity: critical | high | medium | low | info
+#   regex:    Python regex; if it matches file content, a finding is emitted
+rules:
+  - id: aws_secret_access_key
+    title: "AWS secret access key"
+    severity: critical
+    regex: "(?i)aws_secret_access_key\\s*[=:]\\s*['\"]?[A-Za-z0-9/+=]{40}"
+
+  - id: aws_access_key_id
+    title: "AWS access key id"
+    severity: high
+    regex: "AKIA[0-9A-Z]{16}"
+
+  - id: generic_api_token
+    title: "Generic API token / secret in env or config"
+    severity: high
+    regex: "(?i)(api[_-]?token|api[_-]?key|secret[_-]?token)\\s*[=:]\\s*['\"]?[A-Za-z0-9_\\-]{16,}"
+
+  - id: private_key_block
+    title: "Private key material"
+    severity: critical
+    regex: "-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"
