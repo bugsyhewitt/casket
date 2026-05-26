@@ -69,6 +69,55 @@ def test_cves_check_no_vulns_for_unknown_package(_isolate_osv_cache):
     assert findings == []
 
 
+def test_parse_apk_installed_extracts_name_and_version():
+    db = (
+        "C:Q1abc==\n"
+        "P:musl\n"
+        "V:1.2.4-r2\n"
+        "T:the musl c library\n"
+        "\n"
+        "C:Q1def==\n"
+        "P:busybox\n"
+        "V:1.36.0-r0\n"
+        "T:toolbox\n"
+        "\n"
+    )
+    pkgs = cves._parse_apk_installed(db)
+    assert ("musl", "1.2.4-r2") in pkgs
+    assert ("busybox", "1.36.0-r0") in pkgs
+    assert len(pkgs) == 2
+
+
+def test_parse_apk_installed_handles_final_stanza_without_trailing_blank():
+    db = "P:musl\nV:1.2.4-r2\n"  # no trailing blank line
+    assert cves._parse_apk_installed(db) == [("musl", "1.2.4-r2")]
+
+
+def test_cves_check_emits_finding_for_vulnerable_alpine_package(_isolate_osv_cache):
+    # The bundled seed DB maps Alpine|busybox|1.36.0-r0 -> CVE-2023-42366,
+    # so this resolves fully offline with an empty cache.
+    img = load_tarball(fixture_path("alpine-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    findings = cves.run(img, osv_client=client)
+    assert findings, "expected a CVE finding for the vulnerable busybox"
+    by_pkg = {f.detail["package"]: f for f in findings}
+    assert "busybox" in by_pkg
+    f = by_pkg["busybox"]
+    assert f.category == "cve"
+    assert f.detail["ecosystem"] == "Alpine"
+    assert f.detail["installed_version"] == "1.36.0-r0"
+    assert f.detail["cve_id"] == "CVE-2023-42366"
+    # The clean musl package must NOT produce a finding.
+    assert "musl" not in by_pkg
+
+
+def test_cves_check_clean_alpine_image_no_findings(_isolate_osv_cache):
+    img = load_tarball(fixture_path("alpine-clean-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    findings = cves.run(img, osv_client=client)
+    assert findings == []
+
+
 def test_misconfig_check_running_as_root():
     img = load_tarball(fixture_path("rootuser-image.tar"))
     findings = misconfig.run(img)

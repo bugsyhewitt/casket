@@ -165,6 +165,53 @@ def build_all() -> dict[str, str]:
         ],
     )
 
+    # alpine-image: an Alpine layer carrying a real-format apk installed DB.
+    # It declares a known-vulnerable busybox 1.36.0-r0 (seeded -> CVE-2023-42366)
+    # alongside a clean musl entry, so tests can assert findings fire only for
+    # the vulnerable package and not the clean one.
+    digests["alpine-image"] = build_oci_image(
+        FIXTURE_DIR / "alpine-image.tar",
+        layers=[
+            {
+                "lib/apk/db/installed": (
+                    b"C:Q1eXXX==\n"
+                    b"P:musl\n"
+                    b"V:1.2.4-r2\n"
+                    b"A:x86_64\n"
+                    b"T:the musl c library (libc) implementation\n"
+                    b"U:https://musl.libc.org/\n"
+                    b"L:MIT\n"
+                    b"\n"
+                    b"C:Q1bYYY==\n"
+                    b"P:busybox\n"
+                    b"V:1.36.0-r0\n"
+                    b"A:x86_64\n"
+                    b"T:Size optimized toolbox of many common UNIX utilities\n"
+                    b"U:https://busybox.net/\n"
+                    b"L:GPL-2.0-only\n"
+                    b"\n"
+                ),
+            },
+        ],
+    )
+
+    # alpine-clean-image: an Alpine layer whose packages have no seeded vulns.
+    digests["alpine-clean-image"] = build_oci_image(
+        FIXTURE_DIR / "alpine-clean-image.tar",
+        layers=[
+            {
+                "lib/apk/db/installed": (
+                    b"C:Q1zZZZ==\n"
+                    b"P:musl\n"
+                    b"V:1.2.5-r0\n"
+                    b"A:x86_64\n"
+                    b"T:the musl c library (libc) implementation\n"
+                    b"\n"
+                ),
+            },
+        ],
+    )
+
     # rootuser-image: config declares USER root -> misconfig.
     digests["rootuser-image"] = build_oci_image(
         FIXTURE_DIR / "rootuser-image.tar",

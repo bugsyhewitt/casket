@@ -7,5 +7,13 @@
       "summary": "Requests sends Authorization header on cross-origin redirect",
       "database_specific": {"severity": "MEDIUM"}
     }
+  ],
+  "Alpine|busybox|1.36.0-r0": [
+    {
+      "id": "CVE-2023-42366",
+      "aliases": ["CVE-2023-42366"],
+      "summary": "A use-after-free in BusyBox awk leads to denial of service and possibly code execution when processing a crafted awk pattern.",
+      "database_specific": {"severity": "MEDIUM"}
+    }
   ]
 }

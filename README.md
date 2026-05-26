@@ -6,7 +6,8 @@
 *which layer* introduced each one:
 
 - **leaked credentials** — AWS keys, API tokens, private keys planted in a layer
-- **known-vulnerable packages** — resolved against [OSV.dev](https://osv.dev)
+- **known-vulnerable packages** — PyPI, Debian, and Alpine packages resolved
+  against [OSV.dev](https://osv.dev)
 - **misconfigurations** — `USER root`, exposed ports, secret-like env vars
 
 It reads images three ways:
@@ -109,8 +110,9 @@ API and scans them in memory.
 
 ## How CVE lookups stay polite
 
-The CVE check extracts installed packages (PyPI `dist-info` and Debian
-`dpkg/status`) and resolves each `(ecosystem, name, version)` against OSV.dev.
+The CVE check extracts installed packages (PyPI `dist-info`, Debian
+`dpkg/status`, and Alpine `lib/apk/db/installed`) and resolves each
+`(ecosystem, name, version)` against OSV.dev.
 Results are cached to `~/.cache/casket/osv-cache.json` (override with
 `CASKET_OSV_CACHE`). A bundled read-only seed DB resolves a small curated set
 with no network at all. Pass `--offline` to forbid network access entirely.
