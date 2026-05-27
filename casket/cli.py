@@ -59,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--format",
-        choices=["json", "h1md"],
+        choices=["json", "h1md", "sarif"],
         default="json",
         help="output format (default: json)",
     )

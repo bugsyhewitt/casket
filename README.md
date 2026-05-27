@@ -57,7 +57,7 @@ This installs the `casket` console command.
 casket --image REF
        --mode {tarball,podman,remote}
        --checks {creds,cves,misconfig,all}
-       --format {json,h1md}
+       --format {json,h1md,sarif}
        [--offline]
 ```
 
@@ -94,6 +94,15 @@ API and scans them in memory.
   fields (`rule` for creds/misconfig; `cve_id`, `package`, `installed_version`
   for CVEs).
 - `--format h1md` — a HackerOne-style markdown report for human submission.
+- `--format sarif` — [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/)
+  for CI/CD code-scanning ingest. Each finding type becomes a `rule` and each
+  finding a `result`; severity maps to SARIF levels (CRITICAL/HIGH → `error`,
+  MEDIUM → `warning`, LOW/INFO → `note`). Feed it straight to GitHub Advanced
+  Security via `github/codeql-action/upload-sarif`.
+
+```bash
+casket --image ./myapp.tar --checks all --format sarif > casket.sarif
+```
 
 #### example finding (json)
 
@@ -133,7 +142,7 @@ local fixture registry on an ephemeral port.
 ## Scope (v0.1)
 
 In scope: tarball / podman / remote loading; creds, CVE, and misconfig checks;
-per-layer attribution; json and h1md output.
+per-layer attribution; json, h1md, and sarif output.
 
 **Not in v0.1** (deliberately): Docker daemon support (avoided for security and
 licensing), Kubernetes manifest scanning, live cluster scanning, Sigstore

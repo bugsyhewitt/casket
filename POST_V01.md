@@ -59,6 +59,15 @@ The container scanning landscape in 2026 treats Alpine CVE coverage as table sta
 
 **Priority: HIGH. Do second.**
 
+**STATUS: ✅ IMPLEMENTED (Phase 2, Rotation 3).** `--format sarif` is wired into
+`cli.py` and emitted by `_render_sarif()` in `casket/findings.py`. Produces a
+valid SARIF 2.1.0 document: one `rule` per distinct finding type (deduped by a
+`<category>/<slug>` id), one `result` per finding, severity → level mapping
+(CRITICAL/HIGH → `error`, MEDIUM → `warning`, LOW/INFO → `note`), and
+`artifactLocation.uri` locations with image/layer provenance in `properties`.
+Zero new dependencies (stdlib `json`). Covered by `tests/test_sarif.py` (11
+structural tests) plus an E2E case in `tests/test_cli_e2e.py`.
+
 ### What
 Add `--format sarif` output. SARIF (Static Analysis Results Interchange Format) is the OASIS standard for security tool output and the native format for GitHub Advanced Security's Code Scanning. Trivy and Grype both output SARIF; casket's absence of it means it cannot be dropped into a standard GitHub Actions workflow and have findings appear in the Security tab.
 

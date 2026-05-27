@@ -30,7 +30,7 @@ def test_help_lists_required_flags(capsys):
         assert token in out
     assert "tarball" in out and "podman" in out and "remote" in out
     assert "creds" in out and "cves" in out and "misconfig" in out
-    assert "json" in out and "h1md" in out
+    assert "json" in out and "h1md" in out and "sarif" in out
 
 
 # ---- criterion 3: creds JSON shape ----------------------------------------
@@ -160,6 +160,29 @@ def test_h1md_format_renders(capsys):
     out = capsys.readouterr().out
     assert out.startswith("# casket scan report")
     assert "running as root" in out.lower() or "root" in out.lower()
+
+
+# ---- sarif format E2E ------------------------------------------------------
+
+def test_sarif_format_e2e(capsys):
+    rc = main([
+        "--image", fixture_path("rootuser-image.tar"),
+        "--mode", "tarball",
+        "--checks", "misconfig",
+        "--format", "sarif",
+    ])
+    assert rc == 1
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["version"] == "2.1.0"
+    assert doc["$schema"].endswith("sarif-schema-2.1.0.json")
+    driver = doc["runs"][0]["tool"]["driver"]
+    assert driver["name"] == "casket"
+    results = doc["runs"][0]["results"]
+    assert results
+    rule_ids = {r["id"] for r in driver["rules"]}
+    assert any(rid.startswith("misconfig/") for rid in rule_ids)
+    # every result level is one of the SARIF-valid values.
+    assert all(r["level"] in {"error", "warning", "note"} for r in results)
 
 
 # ---- clean exit code -------------------------------------------------------
