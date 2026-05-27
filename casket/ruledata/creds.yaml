@@ -28,3 +28,15 @@ rules:
     title: "Private key material"
     severity: critical
     regex: "-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"
+
+  - id: high_entropy_string
+    title: "High-entropy string (possible secret/token)"
+    severity: medium
+    kind: entropy
+    # Runtime parameters for the entropy scanner (not a regex rule).
+    # The creds check dispatches on kind: entropy instead of compiling these.
+    entropy_threshold: 4.5
+    entropy_threshold_log: 4.0   # lower threshold when path contains "log" / ends in .log
+    min_length: 20
+    charset: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+    finding_id: "CASKET-CREDS-ENTROPY-001"

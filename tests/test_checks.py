@@ -143,3 +143,87 @@ def test_misconfig_clean_image_not_root():
     # This documents that "" means root per Dockerfile semantics.
     rules = {f.detail["rule"] for f in findings}
     assert "running_as_root" in rules
+
+
+# ---------------------------------------------------------------------------
+# Entropy-based credential detection tests
+# ---------------------------------------------------------------------------
+
+def test_creds_entropy_detects_high_entropy_string():
+    """A high-entropy base64-like token fires the high_entropy_string rule."""
+    img = load_tarball(fixture_path("entropy-image.tar"))
+    findings = creds.run(img)
+    by_rule = {f.detail["rule"] for f in findings}
+    assert "high_entropy_string" in by_rule, (
+        f"expected high_entropy_string finding; got rules: {by_rule}"
+    )
+
+
+def test_creds_entropy_finding_has_correct_fields():
+    """Entropy finding carries required fields: severity, finding_id, detail, match_count."""
+    img = load_tarball(fixture_path("entropy-image.tar"))
+    findings = creds.run(img)
+    ef = next((f for f in findings if f.detail.get("rule") == "high_entropy_string"), None)
+    assert ef is not None, "no high_entropy_string finding"
+    assert ef.severity == "medium"
+    assert ef.category == "creds"
+    assert ef.detail.get("finding_id") == "CASKET-CREDS-ENTROPY-001"
+    # detail should show first 8 chars + "..." + entropy score
+    assert "..." in ef.detail.get("detail", "")
+    assert "entropy=" in ef.detail.get("detail", "")
+    assert isinstance(ef.detail.get("match_count"), int)
+    assert ef.detail["match_count"] >= 1
+
+
+def test_creds_entropy_redacts_token_to_8_chars():
+    """The finding detail exposes only the first 8 characters of the matched token."""
+    img = load_tarball(fixture_path("entropy-image.tar"))
+    findings = creds.run(img)
+    ef = next((f for f in findings if f.detail.get("rule") == "high_entropy_string"), None)
+    assert ef is not None
+    detail_str = ef.detail.get("detail", "")
+    # Format: "AbCdEfGh... (entropy=N.NN)"
+    prefix = detail_str.split("...")[0]
+    assert len(prefix) == 8, f"expected 8-char prefix, got {len(prefix)!r}: {detail_str!r}"
+
+
+def test_creds_entropy_low_entropy_string_not_flagged():
+    """A repeated-character string (low entropy) must NOT produce an entropy finding."""
+    img = load_tarball(fixture_path("entropy-image.tar"))
+    findings = creds.run(img)
+    # The readme.txt file contains only 'A' repeated — entropy 0, should not fire.
+    entropy_findings = [f for f in findings if f.detail.get("rule") == "high_entropy_string"]
+    for ef in entropy_findings:
+        assert ef.path_in_layer != "app/readme.txt", (
+            "low-entropy repeated string should not produce an entropy finding"
+        )
+
+
+def test_creds_entropy_log_path_uses_lower_threshold():
+    """Tokens in log paths fire at the lower 4.0 entropy threshold."""
+    img = load_tarball(fixture_path("entropy-logfile-image.tar"))
+    findings = creds.run(img)
+    by_rule = {f.detail["rule"] for f in findings}
+    assert "high_entropy_string" in by_rule, (
+        "log-path token with entropy ~4.46 should fire at log threshold 4.0"
+    )
+    ef = next(f for f in findings if f.detail.get("rule") == "high_entropy_string")
+    assert "log" in ef.path_in_layer
+
+
+def test_creds_entropy_existing_regex_rules_still_fire():
+    """Adding entropy detection must not break existing regex-based creds rules."""
+    img = load_tarball(fixture_path("leaky-image.tar"))
+    findings = creds.run(img)
+    by_rule = {f.detail["rule"] for f in findings}
+    assert "aws_secret_access_key" in by_rule, "existing aws regex rule must still fire"
+
+
+def test_creds_entropy_clean_image_no_entropy_findings():
+    """A clean image with no secrets must not produce any entropy findings."""
+    img = load_tarball(fixture_path("alpine-clean-image.tar"))
+    findings = creds.run(img)
+    entropy_findings = [f for f in findings if f.detail.get("rule") == "high_entropy_string"]
+    assert entropy_findings == [], (
+        f"clean image should not produce entropy findings; got: {entropy_findings}"
+    )

@@ -212,6 +212,43 @@ def build_all() -> dict[str, str]:
         ],
     )
 
+    # entropy-image: a layer with a high-entropy base64-alphabet string that
+    # does NOT match any regex pattern, plus a low-entropy control string.
+    # The high-entropy token is 32 chars of near-random base64 chars (entropy ~5.x).
+    digests["entropy-image"] = build_oci_image(
+        FIXTURE_DIR / "entropy-image.tar",
+        layers=[
+            {
+                # High-entropy token that looks like a raw secret (no known prefix).
+                # "sVq3+Zk8mN2pRjLwT9dXoC5eAhYf1Gu7" — 34 chars, high entropy.
+                "app/config.yml": (
+                    b"database:\n"
+                    b"  host: localhost\n"
+                    b"  secret_token: sVq3+Zk8mN2pRjLwT9dXoC5eAhYf1Gu7\n"
+                ),
+                # Low-entropy string — should NOT produce an entropy finding.
+                "app/readme.txt": (
+                    b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+                ),
+            },
+        ],
+    )
+
+    # entropy-logfile-image: a layer whose path contains "log" — the lower
+    # threshold (4.0) should apply.
+    digests["entropy-logfile-image"] = build_oci_image(
+        FIXTURE_DIR / "entropy-logfile-image.tar",
+        layers=[
+            {
+                # This token has entropy ~4.2 — above the log threshold (4.0)
+                # but below the normal threshold (4.5), so it fires only for logs.
+                "var/log/app.log": (
+                    b"2024-01-01 startup token=aBcDeFgHiJkLmNoPqRsTuV\n"
+                ),
+            },
+        ],
+    )
+
     # rootuser-image: config declares USER root -> misconfig.
     digests["rootuser-image"] = build_oci_image(
         FIXTURE_DIR / "rootuser-image.tar",
