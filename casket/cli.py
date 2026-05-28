@@ -17,7 +17,13 @@ import sys
 
 from casket import __version__
 from casket.findings import render
-from casket.scanner import load_image, resolve_checks, run_checks
+from casket.scanner import (
+    FAIL_ON_CHOICES,
+    exit_code,
+    load_image,
+    resolve_checks,
+    run_checks,
+)
 
 _EPILOG = """\
 casket stays daemonless on purpose: it never talks to a Docker daemon, never
@@ -68,6 +74,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--offline",
         action="store_true",
         help="never hit the network for CVE lookups (cache-only)",
+    )
+    parser.add_argument(
+        "--fail-on",
+        choices=FAIL_ON_CHOICES,
+        default="any",
+        metavar="THRESHOLD",
+        help=(
+            "CI gate: exit 1 only when a finding is at this severity or higher "
+            "(critical, high, medium, low, info). 'any' (default) fails on any "
+            "finding; 'none' never fails on findings (report-only). All "
+            "findings are reported regardless of threshold."
+        ),
     )
     parser.add_argument(
         "--token",
@@ -133,8 +151,10 @@ def main(argv: list[str] | None = None) -> int:
     findings = run_checks(image, selected, osv_client=osv_client)
     output = render(findings, args.format, image=args.image)
     print(output)
-    # Exit 1 if any findings (useful in CI gates); 0 if clean.
-    return 1 if findings else 0
+    # All findings are always reported; the --fail-on threshold gates only the
+    # exit code so CI pipelines can break the build on (say) HIGH+ while still
+    # surfacing lower-severity findings.
+    return exit_code(findings, args.fail_on)
 
 
 if __name__ == "__main__":  # pragma: no cover

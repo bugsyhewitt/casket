@@ -59,12 +59,46 @@ casket --image REF
        --mode {tarball,podman,remote}
        --checks {creds,cves,misconfig,all}
        --format {json,h1md,sarif}
+       [--fail-on {any,critical,high,medium,low,info,none}]
        [--offline]
        [--token TOKEN]
        [--registry-user USER] [--registry-password PASS]
 ```
 
-Exit codes: `0` clean, `1` findings present (handy for CI gates), `2` load error.
+Exit codes: `0` clean (or below the `--fail-on` threshold), `1` findings tripped
+the gate, `2` load error.
+
+### CI gating with `--fail-on`
+
+By default casket exits `1` if it finds *anything* — a single `INFO` exposed
+port breaks the build the same as a leaked AWS key. That's rarely what a
+pipeline wants. `--fail-on SEVERITY` sets the gate threshold: casket exits `1`
+only when a finding is **at that severity or higher**, while still reporting
+*every* finding regardless of threshold.
+
+```bash
+# fail the build only on high- or critical-severity findings
+casket --image ./myapp.tar --checks all --fail-on high
+
+# never fail on findings — report-only (e.g. publish SARIF without blocking)
+casket --image ./myapp.tar --checks all --format sarif --fail-on none > casket.sarif
+
+# original behaviour: fail on any finding (this is the default)
+casket --image ./myapp.tar --checks all --fail-on any
+```
+
+| `--fail-on` | exits 1 when … |
+|---|---|
+| `any` (default) | any finding exists |
+| `critical` | a `critical` finding exists |
+| `high` | a `high` or `critical` finding exists |
+| `medium` | `medium` or higher exists |
+| `low` | `low` or higher exists |
+| `info` | any finding exists (info is the floor) |
+| `none` | never — report-only, always exits 0 on findings |
+
+The threshold gates the exit code only; the rendered report (`json`/`h1md`/
+`sarif`) always contains all findings so nothing is hidden from reviewers.
 
 ### tarball mode (no dependencies)
 
