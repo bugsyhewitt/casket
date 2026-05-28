@@ -152,6 +152,23 @@ TruffleHog has 800+ patterns plus entropy. casket's 4 regex patterns will miss a
 
 **Priority: MEDIUM. Do fourth.**
 
+**STATUS: ✅ IMPLEMENTED (Phase 2, Rotation 6).** The CVE check now extracts
+RPM packages from the modern SQLite rpmdb (`var/lib/rpm/rpmdb.sqlite`; RHEL 9+,
+Fedora, Amazon Linux 2023). `_parse_rpmdb_sqlite()` in `casket/checks/cves.py`
+spills the blob to a private tempfile, opens it read-only with stdlib
+`sqlite3`, and reads each binary RPM *header* blob from the `Packages` table;
+`_parse_rpm_header()` decodes the header's index/data-store format with stdlib
+`struct` to pull NAME/VERSION/RELEASE/EPOCH/ARCH (zero new dependencies). Full
+EVR strings (`epoch:version-release`) are composed via `_rpm_evr()`. OSV
+ecosystem tag: `"Red Hat"` (bare, for deterministic offline seed/cache
+resolution, mirroring the Alpine decision). The legacy Berkeley DB
+`var/lib/rpm/Packages` is skipped silently (no finding, no crash) — BDB parsing
+remains out of scope. Covered by 8 new tests in `tests/test_checks.py`
+(header parse, malformed-blob/non-sqlite safety, EVR composition, vulnerable +
+clean + legacy fixture E2E) with `rpm-image` / `rpm-clean-image` /
+`rpm-legacy-image` fixtures and a `Red Hat|openssl|1:3.0.7-6.el9` →
+CVE-2023-0464 seed entry.
+
 ### What
 Add RPM-based package extraction. RHEL, CentOS, Rocky Linux, AlmaLinux, Amazon Linux, and Fedora images all use RPM. Together with Alpine (item 1), adding RPM coverage means casket handles the three major OS package ecosystems (Debian/Ubuntu already done, Alpine in item 1, RPM here).
 

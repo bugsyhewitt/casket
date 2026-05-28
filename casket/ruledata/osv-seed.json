@@ -15,5 +15,13 @@
       "summary": "A use-after-free in BusyBox awk leads to denial of service and possibly code execution when processing a crafted awk pattern.",
       "database_specific": {"severity": "MEDIUM"}
     }
+  ],
+  "Red Hat|openssl|1:3.0.7-6.el9": [
+    {
+      "id": "CVE-2023-0464",
+      "aliases": ["CVE-2023-0464"],
+      "summary": "A denial of service in OpenSSL related to the verification of X.509 certificate chains that include policy constraints, allowing attackers to exhaust system resources.",
+      "database_specific": {"severity": "HIGH"}
+    }
   ]
 }

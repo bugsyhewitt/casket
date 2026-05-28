@@ -6,8 +6,8 @@
 *which layer* introduced each one:
 
 - **leaked credentials** — AWS keys, API tokens, private keys planted in a layer
-- **known-vulnerable packages** — PyPI, Debian, and Alpine packages resolved
-  against [OSV.dev](https://osv.dev)
+- **known-vulnerable packages** — PyPI, Debian, Alpine, and RPM (RHEL/Fedora)
+  packages resolved against [OSV.dev](https://osv.dev)
 - **misconfigurations** — `USER root`, exposed ports, secret-like env vars
 
 It reads images three ways:
@@ -147,9 +147,21 @@ casket --image ./myapp.tar --checks all --format sarif > casket.sarif
 
 ## How CVE lookups stay polite
 
-The CVE check extracts installed packages (PyPI `dist-info`, Debian
-`dpkg/status`, and Alpine `lib/apk/db/installed`) and resolves each
-`(ecosystem, name, version)` against OSV.dev.
+The CVE check extracts installed packages from four package databases and
+resolves each `(ecosystem, name, version)` against OSV.dev:
+
+| ecosystem | source | notes |
+|---|---|---|
+| PyPI | `*.dist-info/METADATA`, `*.egg-info/PKG-INFO` | |
+| Debian | `var/lib/dpkg/status` | Debian/Ubuntu |
+| Alpine | `lib/apk/db/installed` | `python:*-alpine`, `nginx:alpine`, etc. |
+| Red Hat | `var/lib/rpm/rpmdb.sqlite` | RHEL 9+, Fedora, Amazon Linux 2023 |
+
+RPM coverage reads the modern **SQLite** rpmdb only; the legacy Berkeley DB
+`var/lib/rpm/Packages` (RHEL 7/8, CentOS 7) has no stdlib parser and is skipped
+silently (no finding, no crash). RPM versions are matched as full EVR strings
+(`epoch:version-release`, e.g. `1:3.0.7-6.el9`).
+
 Results are cached to `~/.cache/casket/osv-cache.json` (override with
 `CASKET_OSV_CACHE`). A bundled read-only seed DB resolves a small curated set
 with no network at all. Pass `--offline` to forbid network access entirely.

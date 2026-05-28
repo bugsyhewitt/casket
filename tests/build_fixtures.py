@@ -14,10 +14,88 @@ import hashlib
 import io
 import json
 import os
+import sqlite3
+import struct
 import tarfile
+import tempfile
 from pathlib import Path
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
+
+# RPM header tags / types, mirroring casket.checks.cves.
+_RPMTAG_NAME = 1000
+_RPMTAG_VERSION = 1001
+_RPMTAG_RELEASE = 1002
+_RPMTAG_EPOCH = 1003
+_RPMTAG_ARCH = 1022
+_RPM_INT32_TYPE = 4
+_RPM_STRING_TYPE = 6
+
+
+def _rpm_header_blob(
+    *,
+    name: str,
+    version: str,
+    release: str,
+    arch: str = "x86_64",
+    epoch: int | None = None,
+) -> bytes:
+    """Hand-roll a binary RPM header blob in the form stored in rpmdb.sqlite.
+
+    Layout: index_count(u32) + data_len(u32) + index entries (16 bytes each:
+    tag,type,offset,count) + data store. String fields are NUL-terminated;
+    INT32 fields are 4 big-endian bytes. This matches what
+    ``casket.checks.cves._parse_rpm_header`` expects.
+    """
+    # (tag, type, value) — strings go in the store NUL-terminated.
+    fields: list[tuple[int, int, object]] = [
+        (_RPMTAG_NAME, _RPM_STRING_TYPE, name),
+        (_RPMTAG_VERSION, _RPM_STRING_TYPE, version),
+        (_RPMTAG_RELEASE, _RPM_STRING_TYPE, release),
+        (_RPMTAG_ARCH, _RPM_STRING_TYPE, arch),
+    ]
+    if epoch is not None:
+        fields.append((_RPMTAG_EPOCH, _RPM_INT32_TYPE, epoch))
+
+    store = bytearray()
+    index = bytearray()
+    for tag, typ, value in fields:
+        data_off = len(store)
+        if typ == _RPM_STRING_TYPE:
+            store += value.encode("utf-8") + b"\x00"
+            count = 1
+        elif typ == _RPM_INT32_TYPE:
+            store += struct.pack(">I", int(value))
+            count = 1
+        else:  # pragma: no cover - fixtures only use string/int32
+            raise ValueError(f"unsupported fixture type {typ}")
+        index += struct.pack(">IIiI", tag, typ, data_off, count)
+
+    header = struct.pack(">II", len(fields), len(store))
+    return header + bytes(index) + bytes(store)
+
+
+def _rpmdb_sqlite_bytes(packages: list[dict]) -> bytes:
+    """Build a real SQLite rpmdb (Packages table of header blobs) as bytes."""
+    fd, tmp_path = tempfile.mkstemp(suffix=".sqlite")
+    os.close(fd)
+    try:
+        conn = sqlite3.connect(tmp_path)
+        try:
+            conn.execute(
+                "CREATE TABLE Packages (hnum INTEGER PRIMARY KEY, blob BLOB)"
+            )
+            for i, pkg in enumerate(packages, start=1):
+                conn.execute(
+                    "INSERT INTO Packages (hnum, blob) VALUES (?, ?)",
+                    (i, _rpm_header_blob(**pkg)),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return Path(tmp_path).read_bytes()
+    finally:
+        os.unlink(tmp_path)
 
 
 def _layer_tar(files: dict[str, bytes]) -> bytes:
@@ -208,6 +286,67 @@ def build_all() -> dict[str, str]:
                     b"T:the musl c library (libc) implementation\n"
                     b"\n"
                 ),
+            },
+        ],
+    )
+
+    # rpm-image: a RHEL-family layer carrying a real SQLite rpmdb. It declares
+    # a known-vulnerable openssl 3.0.7-6.el9 (epoch 1, seeded -> CVE-2023-0464)
+    # alongside a clean bash entry, so tests can assert findings fire only for
+    # the vulnerable package and not the clean one.
+    digests["rpm-image"] = build_oci_image(
+        FIXTURE_DIR / "rpm-image.tar",
+        layers=[
+            {
+                "var/lib/rpm/rpmdb.sqlite": _rpmdb_sqlite_bytes(
+                    [
+                        {
+                            "name": "openssl",
+                            "version": "3.0.7",
+                            "release": "6.el9",
+                            "epoch": 1,
+                            "arch": "x86_64",
+                        },
+                        {
+                            "name": "bash",
+                            "version": "5.1.8",
+                            "release": "6.el9",
+                            "arch": "x86_64",
+                        },
+                    ]
+                ),
+            },
+        ],
+    )
+
+    # rpm-clean-image: a RHEL-family layer whose packages have no seeded vulns.
+    digests["rpm-clean-image"] = build_oci_image(
+        FIXTURE_DIR / "rpm-clean-image.tar",
+        layers=[
+            {
+                "var/lib/rpm/rpmdb.sqlite": _rpmdb_sqlite_bytes(
+                    [
+                        {
+                            "name": "bash",
+                            "version": "5.1.8",
+                            "release": "6.el9",
+                            "arch": "x86_64",
+                        },
+                    ]
+                ),
+            },
+        ],
+    )
+
+    # rpm-legacy-image: a RHEL 7/8 style layer with only the Berkeley DB
+    # `Packages` file (no rpmdb.sqlite). casket must skip it silently — no
+    # findings, no crash.
+    digests["rpm-legacy-image"] = build_oci_image(
+        FIXTURE_DIR / "rpm-legacy-image.tar",
+        layers=[
+            {
+                # Not a real BDB; content is irrelevant — casket never opens it.
+                "var/lib/rpm/Packages": b"\x00\x05\x16\x53 berkeley db placeholder\n",
             },
         ],
     )
