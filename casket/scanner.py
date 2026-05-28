@@ -9,12 +9,22 @@ from casket.findings import Finding
 from casket.oci import Image, load_tarball
 
 
-def load_image(image_ref: str, mode: str) -> Image:
+def load_image(
+    image_ref: str,
+    mode: str,
+    *,
+    token: str | None = None,
+    registry_user: str | None = None,
+    registry_password: str | None = None,
+) -> Image:
     """Load an image for the given mode.
 
     Imports for podman/remote are deferred so tarball-only runs don't require
     httpx-driven code paths to import cleanly and so import errors surface only
     when the relevant mode is actually used.
+
+    ``token``/``registry_user``/``registry_password`` are only meaningful for
+    ``remote`` mode and are ignored otherwise.
     """
     if mode == "tarball":
         return load_tarball(image_ref)
@@ -25,7 +35,12 @@ def load_image(image_ref: str, mode: str) -> Image:
     if mode == "remote":
         from casket.remote_mode import load_remote
 
-        return load_remote(image_ref)
+        return load_remote(
+            image_ref,
+            token=token,
+            user=registry_user,
+            password=registry_password,
+        )
     raise ValueError(f"unknown mode: {mode!r}")
 
 

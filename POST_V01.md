@@ -176,6 +176,20 @@ RHEL-family images are common in enterprise environments. Without RPM coverage, 
 
 **Priority: MEDIUM. Do fifth.**
 
+**STATUS: ✅ IMPLEMENTED (Phase 2, Rotation 5).** `remote_mode.py` now performs
+the OCI Distribution Spec bearer-token challenge-response flow: on a `401
+WWW-Authenticate: Bearer realm=...,service=...,scope=...` it parses the
+challenge (`parse_www_authenticate`, quote- and comma-aware), fetches a token
+from the realm (`_negotiate_token`, optional HTTP Basic creds), and retries the
+request, reusing the acquired `Authorization` header for subsequent
+manifest/blob fetches. New CLI flags `--token`, `--registry-user`,
+`--registry-password` plus `CASKET_REGISTRY_USER` / `CASKET_REGISTRY_PASSWORD`
+env vars (CLI wins; env preferred for CI). Credentials are never logged. Zero
+new dependencies (httpx already present). Covered by 6 new tests in
+`tests/test_remote_mode.py` (challenge parsing, negotiation with/without creds,
+token-less realm failure path) against a fixture registry that 401s and issues
+tokens. AWS ECR CLI integration intentionally deferred (documented in README).
+
 ### What
 The current `remote` mode only supports a static `--token` bearer token passed as a CLI flag. Real registries (Docker Hub, GitHub Container Registry, AWS ECR, Azure ACR) issue tokens via a challenge-response flow: the client hits `/v2/`, receives a `401 WWW-Authenticate: Bearer realm=...` response, then fetches a token from the realm URL and retries with `Authorization: Bearer <token>`.
 

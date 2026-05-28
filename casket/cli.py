@@ -12,6 +12,7 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from casket import __version__
@@ -69,6 +70,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="never hit the network for CVE lookups (cache-only)",
     )
     parser.add_argument(
+        "--token",
+        metavar="TOKEN",
+        help="remote mode: static bearer token (sent as Authorization: Bearer)",
+    )
+    parser.add_argument(
+        "--registry-user",
+        metavar="USER",
+        help=(
+            "remote mode: username for registry bearer-token negotiation "
+            "(or set CASKET_REGISTRY_USER)"
+        ),
+    )
+    parser.add_argument(
+        "--registry-password",
+        metavar="PASS",
+        help=(
+            "remote mode: password/token for registry bearer-token negotiation "
+            "(or set CASKET_REGISTRY_PASSWORD; env var preferred for CI safety)"
+        ),
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"casket {__version__}",
@@ -87,8 +109,20 @@ def main(argv: list[str] | None = None) -> int:
 
         osv_client = OSVClient(offline=args.offline)
 
+    # Credentials: CLI flag wins, otherwise fall back to env vars (CI-safe).
+    registry_user = args.registry_user or os.environ.get("CASKET_REGISTRY_USER")
+    registry_password = args.registry_password or os.environ.get(
+        "CASKET_REGISTRY_PASSWORD"
+    )
+
     try:
-        image = load_image(args.image, args.mode)
+        image = load_image(
+            args.image,
+            args.mode,
+            token=args.token,
+            registry_user=registry_user,
+            registry_password=registry_password,
+        )
     except FileNotFoundError:
         print(f"casket: image not found: {args.image}", file=sys.stderr)
         return 2
