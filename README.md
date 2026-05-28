@@ -59,6 +59,8 @@ casket --image REF
        --checks {creds,cves,misconfig,all}
        --format {json,h1md,sarif}
        [--offline]
+       [--token TOKEN]
+       [--registry-user USER] [--registry-password PASS]
 ```
 
 Exit codes: `0` clean, `1` findings present (handy for CI gates), `2` load error.
@@ -86,6 +88,32 @@ casket --image http://registry.internal:5000/team/app:1.2 --mode remote --checks
 
 `casket` pulls the manifest, config, and layer blobs over the OCI distribution
 API and scans them in memory.
+
+**Authentication.** Public registries (Docker Hub, GHCR, ECR, ACR) gate pulls
+behind a bearer-token challenge: the registry replies `401 WWW-Authenticate:
+Bearer realm=...`, the client fetches a token from the realm, then retries.
+`casket` performs this negotiation automatically. Three options:
+
+```bash
+# anonymous pull of a public image (token negotiated, no credentials)
+casket --image registry.hub.docker.com/library/alpine:3.19 --mode remote
+
+# authenticated pull — credentials feed the token endpoint via HTTP Basic
+casket --image ghcr.io/org/private:1.0 --mode remote \
+       --registry-user "$GH_USER" --registry-password "$GH_TOKEN"
+
+# a pre-issued static bearer token (internal registries)
+casket --image http://registry.internal:5000/team/app:1.2 --mode remote \
+       --token "$BEARER_TOKEN"
+```
+
+Credentials may also be supplied via the `CASKET_REGISTRY_USER` and
+`CASKET_REGISTRY_PASSWORD` environment variables (preferred in CI so secrets
+never appear in process listings or shell history). CLI flags take precedence
+over env vars. Credentials are never logged.
+
+> For AWS ECR, use `aws ecr get-login-password` as the `--registry-password`
+> with `--registry-user AWS`.
 
 ### output formats
 
