@@ -50,11 +50,29 @@ def run_checks(
     *,
     osv_client: Any = None,
 ) -> list[Finding]:
-    """Run the named checks against a loaded image and collect findings."""
+    """Run the named checks against a loaded image and collect findings.
+
+    After collection, each finding is annotated with the Dockerfile command
+    that introduced its layer (``detail["layer_command"]``) when the image
+    config carries the relevant ``history`` entry. This makes findings
+    actionable: an operator sees *which build instruction* (e.g.
+    ``RUN apt-get install -y openssl``) produced the issue, not just an opaque
+    layer digest. Findings whose ``layer_sha`` is the synthetic config digest
+    (misconfig checks) or whose layer has no resolvable command are left
+    unannotated.
+    """
     findings: list[Finding] = []
     for name in selected:
         fn = checks_mod.REGISTRY[name]
         findings.extend(fn(image, osv_client=osv_client))
+
+    command_map = image.layer_command_map()
+    if command_map:
+        for finding in findings:
+            command = command_map.get(finding.layer_sha)
+            if command is not None:
+                finding.detail["layer_command"] = command
+
     return findings
 
 

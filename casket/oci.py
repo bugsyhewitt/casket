@@ -84,6 +84,34 @@ class Image:
     def history(self) -> list[dict[str, Any]]:
         return self.config.get("history", [])
 
+    def layer_command_map(self) -> dict[str, str]:
+        """Map each layer digest to the Dockerfile command that created it.
+
+        The OCI image config's ``history`` array records one entry per build
+        step in order. Entries marked ``empty_layer: true`` (e.g. ``ENV``,
+        ``WORKDIR``, ``CMD``) change only metadata and contribute no filesystem
+        layer, so they are skipped here. The remaining (filesystem-bearing)
+        history entries align positionally with ``self.layers`` — the Nth
+        non-empty entry corresponds to the Nth layer.
+
+        Returns ``{layer.digest: created_by}`` for every layer that has a
+        resolvable command. Layers beyond the available history (or whose
+        history entry has no ``created_by``) are simply omitted; callers treat a
+        missing key as "no command available" and degrade gracefully. Never
+        raises — a malformed or absent history yields an empty map.
+        """
+        history = self.history
+        if not history:
+            return {}
+        # The filesystem-bearing history entries, in order.
+        fs_entries = [h for h in history if not h.get("empty_layer", False)]
+        mapping: dict[str, str] = {}
+        for layer, entry in zip(self.layers, fs_entries):
+            created_by = entry.get("created_by")
+            if created_by:
+                mapping[layer.digest] = created_by
+        return mapping
+
     @property
     def config_descriptor_digest(self) -> str:
         """A stable digest for the image config, used as a synthetic layer_sha

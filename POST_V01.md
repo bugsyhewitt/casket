@@ -272,6 +272,22 @@ A creds scanner with 4 patterns feels like a toy. Adding 15 well-known high-prec
 
 **Priority: LOW-MEDIUM. Do last.**
 
+**STATUS: ✅ IMPLEMENTED (Phase 2, Rotation 8).** Findings are now annotated
+with `detail["layer_command"]` — the Dockerfile instruction that introduced the
+finding's layer. `Image.layer_command_map()` in `casket/oci.py` builds a
+`{layer_digest: created_by}` map by aligning the filesystem-bearing OCI
+`history` entries with `image.layers` positionally; metadata-only steps
+(`empty_layer: true`, e.g. `ENV`/`WORKDIR`/`CMD`) are skipped per the image
+spec. `scanner.run_checks()` attaches the command to each finding whose
+`layer_sha` resolves in the map; config-derived misconfig findings (synthetic
+config digest) and history-less images are left unannotated, never
+mis-attributed, never crashing. The field surfaces in all three formats for
+free (json flatten / h1md detail bullet / sarif properties). Zero new
+dependencies. Covered by 9 new tests in `tests/test_layer_command.py`
+(map construction + empty/short-history safety + per-layer correctness +
+misconfig exclusion + json/h1md/sarif surfacing) against a new `history-image`
+fixture with an intervening `empty_layer` ENV step.
+
 ### What
 casket already tracks `layer_sha` per finding. But operators scanning multi-layer images want to know *which Dockerfile instruction* introduced a vulnerability — not just which SHA. Currently the `history` field on the image config (`image.history`) maps each layer to its `created_by` command (e.g. `RUN apt-get install -y openssl`), but this is never surfaced in findings output.
 
@@ -300,7 +316,7 @@ This makes findings actionable: instead of "layer sha256:abc123 has a leaked key
 | 4 | RPM package extraction | 1.5 days | Medium — RHEL/Amazon Linux CVE coverage | **MEDIUM** |
 | 5 | Registry authentication (bearer token flow) | 2 days | Medium — `--mode remote` works on real registries | **MEDIUM** |
 | 6 | Expanded credential ruleset (4 → 19 patterns) | 1 day | Medium — practical coverage for real teams | **MEDIUM** |
-| 7 | Layered diff mode (history command attribution) | 0.5 days | Low-Medium — operator ergonomics | **LOW-MEDIUM** |
+| 7 | Layered diff mode (history command attribution) | 0.5 days | Low-Medium — operator ergonomics | ✅ DONE |
 
 **Total estimated effort: ~8.5 days** of focused implementation, spread across Phase 2 laps.
 
