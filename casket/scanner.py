@@ -83,3 +83,46 @@ def resolve_checks(checks_arg: str) -> list[str]:
     if checks_arg == "cves":
         return ["cves"]
     return [checks_arg]
+
+
+# Severity ordering for the CI gate (lower rank == more severe). Mirrors the
+# ordering in findings.py; kept here to avoid a render-layer import in the
+# gate path.
+_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+# Accepted --fail-on values, in declaration order (for the CLI choices list).
+FAIL_ON_CHOICES = ["any", "critical", "high", "medium", "low", "info", "none"]
+
+
+def exit_code(findings: list[Finding], fail_on: str = "any") -> int:
+    """Compute the process exit code for a scan, gated by severity threshold.
+
+    The CI gate decides *whether findings should fail the build*, independent
+    of what gets reported — every finding is always rendered. ``fail_on``:
+
+      - ``"any"``  (default): exit 1 if there is *any* finding. This preserves
+        casket's original binary behaviour.
+      - a severity (``critical``/``high``/``medium``/``low``/``info``): exit 1
+        only if at least one finding is *at that severity or more severe*. e.g.
+        ``--fail-on high`` ignores medium/low/info findings for gating but still
+        fails on high and critical.
+      - ``"none"``: never exit 1 on findings — report-only mode. Useful for
+        publishing results (SARIF upload, dashboards) without breaking the build.
+
+    Returns 0 (clean / below threshold) or 1 (gate tripped). Load errors are
+    surfaced as exit 2 by the caller, never here.
+    """
+    if not findings:
+        return 0
+    if fail_on == "none":
+        return 0
+    if fail_on == "any":
+        return 1
+    threshold = _SEVERITY_RANK.get(fail_on)
+    if threshold is None:  # unknown value: fail safe (treat as "any")
+        return 1
+    for finding in findings:
+        rank = _SEVERITY_RANK.get(finding.severity, 99)
+        if rank <= threshold:
+            return 1
+    return 0
