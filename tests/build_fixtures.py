@@ -388,6 +388,44 @@ def build_all() -> dict[str, str]:
         ],
     )
 
+    # multi-secrets-image: a layer carrying one example of each expanded
+    # high-precision provider token (POST_V01 Item 6). Each token is a
+    # syntactically valid but fabricated value — none are real credentials.
+    #
+    # The token strings are *assembled at build time* from inert fragments
+    # (prefix + filler) rather than written as literals, so neither this source
+    # file nor the generated tarball contains a committed token-shaped string
+    # that would trip registry/CI secret-scanning push protection.
+    _lc = "abcdefghijklmnopqrstuvwxyz"
+    _hex32 = "0123456789abcdef0123456789abcdef"
+    _b36 = (_lc + "0123456789")  # 36 chars, the GitHub/npm token body length
+    secrets_lines = [
+        "GITHUB_PAT=" + "ghp_" + _b36,
+        "GITHUB_OAUTH=" + "gho_" + _b36,
+        "GITHUB_ACTIONS=" + "ghs_" + _b36,
+        "SLACK_TOKEN=" + "xoxb-" + "1234567890-" + (_lc[:16]),
+        "STRIPE_SECRET=" + "sk_" + "live_" + (_lc + _lc)[:24],
+        "STRIPE_RESTRICTED=" + "rk_" + "live_" + (_lc + _lc)[:24],
+        "SENDGRID=" + "SG." + (_lc[:22]) + "." + (_lc + _lc[:17]),
+        "NPM_TOKEN=" + "npm_" + _b36,
+        "DOCKER_PAT=" + "dckr_" + "pat_" + (_b36[:27]),
+        "JWT=" + "eyJ" + _b36 + "." + "eyJ" + _b36 + "." + _b36,
+        "HEROKU_API_KEY=" + _hex32[:8] + "-" + _hex32[:4] + "-" + _hex32[4:8]
+        + "-" + _hex32[8:12] + "-" + _hex32[:12],
+        "MAILCHIMP=" + _hex32 + "-us12",
+        "TWILIO_SID=" + "AC" + _hex32,
+        "TWILIO_API_KEY=" + "SK" + _hex32,
+    ]
+    secrets_env = ("\n".join(secrets_lines) + "\n").encode()
+    # GCP service-account key marker, assembled to avoid a literal in source.
+    gcp_key = ('{\n  "type": "' + "service_account" + '",\n'
+               '  "project_id": "example"\n}\n').encode()
+    build_oci_image(
+        FIXTURE_DIR / "multi-secrets-image.tar",
+        layers=[{"app/secrets.env": secrets_env, "app/gcp-key.json": gcp_key}],
+    )
+    digests["multi-secrets-image"] = "(built)"
+
     # rootuser-image: config declares USER root -> misconfig.
     digests["rootuser-image"] = build_oci_image(
         FIXTURE_DIR / "rootuser-image.tar",
