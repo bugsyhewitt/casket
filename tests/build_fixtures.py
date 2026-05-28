@@ -119,13 +119,20 @@ def build_oci_image(
     *,
     layers: list[dict[str, bytes]],
     config_overrides: dict | None = None,
+    history: list[dict] | None = None,
 ) -> str:
-    """Write a valid OCI image-layout tarball. Returns the top layer digest."""
+    """Write a valid OCI image-layout tarball. Returns the top layer digest.
+
+    ``history`` lets a fixture declare an explicit OCI config ``history`` array
+    (including ``empty_layer`` metadata-only steps) so layer→command attribution
+    can be exercised. When omitted, a default one-entry-per-layer history is
+    synthesised (each filesystem-bearing, mirroring real layer alignment).
+    """
     blobs: dict[str, bytes] = {}  # digest -> bytes
 
     layer_descs = []
     diff_ids = []
-    history = []
+    synth_history = []
     for files in layers:
         tar_bytes = _layer_tar(files)
         d = _digest(tar_bytes)
@@ -138,7 +145,9 @@ def build_oci_image(
             }
         )
         diff_ids.append(d)
-        history.append({"created_by": f"ADD layer {d[:19]}"})
+        synth_history.append({"created_by": f"ADD layer {d[:19]}"})
+
+    history = history if history is not None else synth_history
 
     config_obj = {
         "architecture": "amd64",
@@ -425,6 +434,36 @@ def build_all() -> dict[str, str]:
         layers=[{"app/secrets.env": secrets_env, "app/gcp-key.json": gcp_key}],
     )
     digests["multi-secrets-image"] = "(built)"
+
+    # history-image: a two-layer image with an explicit OCI history that
+    # includes a metadata-only (empty_layer) ENV step between the two
+    # filesystem-bearing layers. Each filesystem layer plants a distinct AWS
+    # secret so layer→command attribution can be asserted: the first secret
+    # must attribute to the `COPY .env` command, the second to the
+    # `RUN echo key` command — proving the empty_layer entry is skipped and the
+    # remaining history aligns positionally with the layers.
+    digests["history-image"] = build_oci_image(
+        FIXTURE_DIR / "history-image.tar",
+        layers=[
+            {
+                "app/first.env": (
+                    b"AWS_SECRET_ACCESS_KEY="
+                    b"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+                ),
+            },
+            {
+                "app/second.env": (
+                    b"AWS_SECRET_ACCESS_KEY="
+                    b"je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY\n"
+                ),
+            },
+        ],
+        history=[
+            {"created_by": "COPY .env /app/first.env"},
+            {"created_by": "ENV PATH=/usr/bin", "empty_layer": True},
+            {"created_by": "RUN echo key > /app/second.env"},
+        ],
+    )
 
     # rootuser-image: config declares USER root -> misconfig.
     digests["rootuser-image"] = build_oci_image(

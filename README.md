@@ -121,7 +121,9 @@ over env vars. Credentials are never logged.
 - `--format json` — the canonical machine-readable report. Every finding carries
   `category`, `severity`, `layer_sha`, and `path_in_layer`, plus category-specific
   fields (`rule` for creds/misconfig; `cve_id`, `package`, `installed_version`
-  for CVEs).
+  for CVEs). When the image config records build history, findings also carry
+  `layer_command` — the Dockerfile instruction that introduced the layer (see
+  [Layer command attribution](#layer-command-attribution)).
 - `--format h1md` — a HackerOne-style markdown report for human submission.
 - `--format sarif` — [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/)
   for CI/CD code-scanning ingest. Each finding type becomes a `rule` and each
@@ -142,9 +144,29 @@ casket --image ./myapp.tar --checks all --format sarif > casket.sarif
   "severity": "critical",
   "layer_sha": "sha256:d513fd1c…",
   "path_in_layer": "app/.env",
-  "rule": "aws_secret_access_key"
+  "rule": "aws_secret_access_key",
+  "layer_command": "COPY .env /app/.env"
 }
 ```
+
+## Layer command attribution
+
+Every finding records the `layer_sha` of the layer that introduced it. When the
+image config carries OCI build `history` (almost all real images do), `casket`
+goes one step further and attaches `layer_command` — the actual Dockerfile
+instruction that created that layer, e.g. `RUN apt-get install -y openssl` or
+`COPY .env /app/.env`. This turns "layer `sha256:abc…` leaked a key" into
+"the `COPY .env /app/.env` step leaked a key", so you can fix the Dockerfile
+directly instead of reverse-engineering which instruction produced a digest.
+
+Attribution aligns the filesystem-bearing history entries with the layer list
+in order; metadata-only steps (`ENV`, `WORKDIR`, `CMD`, …, marked
+`empty_layer`) are skipped, matching the OCI image spec. The field appears in
+all three output formats: as `layer_command` in `json`, a `**layer_command:**`
+bullet in `h1md`, and a `properties.layer_command` entry in `sarif`. Findings
+derived from the image config rather than a layer (misconfig checks) carry no
+`layer_command`, since they belong to no single filesystem layer. If an image
+ships without history, findings simply omit the field — nothing else changes.
 
 ## Credential coverage
 
