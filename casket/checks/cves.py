@@ -41,6 +41,23 @@ The release-qualified name is what the live API needs; the bare fallback keeps
 the seed DB and warm cache (both keyed on bare ``Alpine``) resolving offline
 exactly as before. If no ``etc/alpine-release`` is present we query bare
 ``Alpine`` only — identical to the previous behaviour, never a crash.
+
+[Worker decision: Debian/Ubuntu release-qualified ecosystem — Rotation 11]
+The exact gap Rotation 10 closed for Alpine also exists for Debian: OSV.dev
+keys Debian vulns under release-qualified ecosystems like ``Debian:12`` (the
+major release number), not a bare ``Debian``. dpkg packages were tagged with
+the bare ecosystem ``"Debian"`` since v0.1, so a *live* OSV.dev query returned
+nothing — Debian CVE coverage was effectively seed-only against the real API.
+This rotation mirrors the Alpine fix: we read the Debian release from the image
+(``etc/debian_version`` — a one-line version like ``12.4`` — falling back to the
+``VERSION_ID`` field of ``etc/os-release`` for Ubuntu and minimal images),
+derive the release-qualified ecosystem ``Debian:MAJOR`` (``Debian:12``), and
+query that *first*, falling back to bare ``Debian``. The bare fallback keeps the
+seed DB and warm cache (keyed on bare ``Debian``) resolving offline exactly as
+before. If no release marker is present we query bare ``Debian`` only —
+identical to the previous behaviour, never a crash. The reported
+``detail["ecosystem"]`` stays the bare ``"Debian"`` for output uniformity, as
+with Alpine; the qualifier is a query-time concern only.
 """
 
 from __future__ import annotations
@@ -62,10 +79,22 @@ _DPKG_STATUS = "var/lib/dpkg/status"
 _APK_INSTALLED = "lib/apk/db/installed"
 _RPMDB_SQLITE = "var/lib/rpm/rpmdb.sqlite"
 _ALPINE_RELEASE = "etc/alpine-release"
+_DEBIAN_VERSION = "etc/debian_version"
+_OS_RELEASE = "etc/os-release"
 
 # An Alpine release line looks like ``3.18.4`` (or rarely ``3.18``). We keep the
 # MAJOR.MINOR pair to build the OSV ecosystem qualifier ``Alpine:vMAJOR.MINOR``.
 _ALPINE_RELEASE_RE = re.compile(r"^(\d+)\.(\d+)(?:\.\d+)?")
+
+# A Debian version line looks like ``12.4`` or ``12`` (and sometimes a testing
+# codename like ``bookworm/sid`` — non-numeric, which we ignore). We keep the
+# MAJOR number to build the OSV ecosystem qualifier ``Debian:MAJOR``.
+_DEBIAN_VERSION_RE = re.compile(r"^(\d+)(?:\.\d+)*")
+# In etc/os-release, the release number lives in ``VERSION_ID="12"`` (the value
+# may or may not be quoted). We pull the leading integer of that value.
+_OS_RELEASE_VERSION_ID_RE = re.compile(
+    r'^VERSION_ID\s*=\s*"?(\d+)', re.MULTILINE
+)
 
 # RPM header tags we care about (see lib/rpmtag.h in the rpm sources).
 _RPMTAG_NAME = 1000
@@ -182,6 +211,63 @@ def _detect_alpine_ecosystem(image: Image) -> str | None:
                 if qualified:
                     return qualified
     return None
+
+
+def _parse_debian_version(text: str) -> str | None:
+    """Derive the OSV ecosystem qualifier from an ``etc/debian_version`` line.
+
+    The file holds a single version like ``12.4`` (sometimes a bare major
+    ``12``, or a testing codename like ``bookworm/sid`` which is non-numeric).
+    OSV keys Debian vulns under the *major* release number, so we extract MAJOR
+    and return ``Debian:MAJOR`` (e.g. ``Debian:12``). Returns ``None`` if no
+    recognisable numeric version is found — the caller then derives the release
+    from ``etc/os-release`` or falls back to the bare ``Debian`` ecosystem.
+    """
+    for line in text.splitlines():
+        m = _DEBIAN_VERSION_RE.match(line.strip())
+        if m:
+            return f"Debian:{m.group(1)}"
+    return None
+
+
+def _parse_os_release_debian(text: str) -> str | None:
+    """Derive ``Debian:MAJOR`` from an ``etc/os-release`` ``VERSION_ID``.
+
+    Ubuntu, Debian-slim and other minimal images often carry ``etc/os-release``
+    but no ``etc/debian_version``. The ``VERSION_ID`` field holds the numeric
+    release (``VERSION_ID="12"`` on Debian 12, ``VERSION_ID="22.04"`` on Ubuntu
+    22.04). OSV keys Debian-family vulns under the major number, so we return
+    ``Debian:MAJOR``. Returns ``None`` if no numeric ``VERSION_ID`` is present.
+    """
+    m = _OS_RELEASE_VERSION_ID_RE.search(text)
+    if m:
+        return f"Debian:{m.group(1)}"
+    return None
+
+
+def _detect_debian_ecosystem(image: Image) -> str | None:
+    """Scan an image for a Debian release marker and return its ecosystem tag.
+
+    The release marker (``etc/debian_version`` or ``etc/os-release``) and the
+    package db (``var/lib/dpkg/status``) can live in different layers, so
+    detection is an image-level pass. ``etc/debian_version`` is preferred; we
+    fall back to the ``VERSION_ID`` of ``etc/os-release`` (Ubuntu / slim images).
+    The first layer that yields a parseable release wins. Returns the
+    release-qualified ecosystem (e.g. ``Debian:12``) or ``None`` if no release
+    marker is present.
+    """
+    os_release_candidate: str | None = None
+    for layer in image.layers:
+        for path, _size, reader in layer.iter_files():
+            if path == _DEBIAN_VERSION:
+                text = reader().decode("utf-8", errors="ignore")
+                qualified = _parse_debian_version(text)
+                if qualified:
+                    return qualified
+            elif path == _OS_RELEASE and os_release_candidate is None:
+                text = reader().decode("utf-8", errors="ignore")
+                os_release_candidate = _parse_os_release_debian(text)
+    return os_release_candidate
 
 
 def _parse_rpm_header(blob: bytes) -> dict[str, str]:
@@ -356,6 +442,11 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
     # CVE lookups actually work. None when the image carries no release marker.
     alpine_ecosystem = _detect_alpine_ecosystem(image)
 
+    # Same release-qualified resolution for Debian/Ubuntu: OSV.dev keys Debian
+    # vulns under e.g. "Debian:12". We query that first (live API) with a bare
+    # "Debian" fallback (seed DB / cache). None when no release marker exists.
+    debian_ecosystem = _detect_debian_ecosystem(image)
+
     for layer in image.layers:
         for pkg in _extract_packages(layer):
             if pkg.ecosystem == "Alpine":
@@ -363,6 +454,12 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
                 # (seed DB / cache). query_ecosystems dedupes and skips falsy.
                 vulns = client.query_ecosystems(
                     [alpine_ecosystem, "Alpine"], pkg.name, pkg.version
+                )
+            elif pkg.ecosystem == "Debian":
+                # Release-qualified first (live API), bare "Debian" fallback
+                # (seed DB / cache). query_ecosystems dedupes and skips falsy.
+                vulns = client.query_ecosystems(
+                    [debian_ecosystem, "Debian"], pkg.name, pkg.version
                 )
             else:
                 vulns = client.query(pkg.ecosystem, pkg.name, pkg.version)

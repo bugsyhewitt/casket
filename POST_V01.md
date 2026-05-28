@@ -378,12 +378,46 @@ low complexity, zero new dependencies, no scope creep.
   INFO finding doesn't break a build the way a leaked AWS key does. See
   `exit_code()` / `FAIL_ON_CHOICES` in `casket/scanner.py`.
 
+### Item 9 — Debian/Ubuntu release-qualified OSV resolution
+
+**Priority: HIGH. ✅ IMPLEMENTED (Phase 2, Rotation 11).**
+
+The same gap Item 8 fixed for Alpine existed for Debian: dpkg packages were
+tagged with the bare ecosystem `"Debian"`, but OSV.dev keys Debian vulns under
+the major-release-qualified ecosystem `Debian:12`. So a *live* OSV.dev query for
+bare `Debian` returned nothing — Debian/Ubuntu CVE coverage was effectively
+seed-only against the real API.
+
+**What shipped.** casket now reads the Debian release from `etc/debian_version`
+(a one-line version like `12.4`), falling back to the `VERSION_ID` field of
+`etc/os-release` (Ubuntu and `*-slim` images that ship no `etc/debian_version`),
+derives the release-qualified ecosystem `Debian:MAJOR` (`Debian:12`), and
+queries that *first* via the existing `OSVClient.query_ecosystems`, falling back
+to bare `Debian` (seed DB / warm cache). Implementation, mirroring the Alpine
+pattern exactly:
+
+- `_parse_debian_version(text)` extracts MAJOR from `etc/debian_version`
+  (ignores non-numeric testing codenames like `bookworm/sid`).
+- `_parse_os_release_debian(text)` extracts MAJOR from an `os-release`
+  `VERSION_ID="12"` line (quote-tolerant; Ubuntu's `22.04` → `Debian:22`).
+- `_detect_debian_ecosystem(image)` is an image-level scan (release marker and
+  dpkg db often live in different layers); `etc/debian_version` is preferred,
+  with `etc/os-release` `VERSION_ID` as the fallback.
+- `cves.run()` calls `query_ecosystems([debian_ecosystem, "Debian"], ...)` for
+  Debian packages. The reported `detail["ecosystem"]` stays bare `"Debian"` for
+  output uniformity; the qualifier is a query-time concern only.
+
+Zero new dependencies. Covered by 11 new tests in `tests/test_checks.py`
+(version + os-release parsing, codename/missing-field None paths, cross-layer
+detection, os-release fallback detection, the release-qualified query path
+proven by seeding *only* under `Debian:12`, the os-release-derived variant, and
+the bare-`Debian` seed-DB fallback chain) against new `debian-release-image`
+(release marker in a separate layer from the dpkg db) and
+`debian-osrelease-image` (os-release-only) fixtures, plus a bare
+`Debian|openssl|3.0.11-1~deb12u1` → CVE-2023-5678 seed entry.
+
 ### Candidate next items (not yet done)
 
-- **Debian/Ubuntu release-qualified ecosystems** — the same gap Item 8 fixes
-  for Alpine exists for Debian (OSV keys `Debian:12`). Read `etc/debian_version`
-  or `etc/os-release` `VERSION_ID` and query `Debian:<major>` first. Same
-  pattern, same `query_ecosystems` plumbing — now in place.
 - **Alpine `edge` handling** — `etc/alpine-release` on edge images is non-numeric;
   OSV has no `Alpine:edge`. Currently falls back to bare `Alpine` (fine, but
   could log a note).

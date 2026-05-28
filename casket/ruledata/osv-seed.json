@@ -16,6 +16,14 @@
       "database_specific": {"severity": "MEDIUM"}
     }
   ],
+  "Debian|openssl|3.0.11-1~deb12u1": [
+    {
+      "id": "CVE-2023-5678",
+      "aliases": ["CVE-2023-5678"],
+      "summary": "Generating excessively long X9.42 DH keys or checking excessively long X9.42 DH keys or parameters may be very slow in OpenSSL.",
+      "database_specific": {"severity": "MEDIUM"}
+    }
+  ],
   "Red Hat|openssl|1:3.0.7-6.el9": [
     {
       "id": "CVE-2023-0464",

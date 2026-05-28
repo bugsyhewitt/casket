@@ -326,6 +326,56 @@ def build_all() -> dict[str, str]:
         ],
     )
 
+    # debian-release-image: exercises Debian release-qualified OSV resolution.
+    # The base layer carries etc/debian_version ("12.4") in a *different* layer
+    # than var/lib/dpkg/status, so the image-level release scan must find it
+    # cross-layer. The dpkg db declares a vulnerable openssl; the test seeds the
+    # vuln under the release-qualified ecosystem "Debian:12" (NOT bare "Debian")
+    # to prove the release-qualified query path is what resolves it.
+    digests["debian-release-image"] = build_oci_image(
+        FIXTURE_DIR / "debian-release-image.tar",
+        layers=[
+            {
+                "etc/debian_version": b"12.4\n",
+            },
+            {
+                "var/lib/dpkg/status": (
+                    b"Package: openssl\n"
+                    b"Status: install ok installed\n"
+                    b"Version: 3.0.11-1~deb12u1\n"
+                    b"Architecture: amd64\n"
+                    b"\n"
+                ),
+            },
+        ],
+    )
+
+    # debian-osrelease-image: the release marker lives ONLY in etc/os-release
+    # (VERSION_ID="12"), with no etc/debian_version — the Ubuntu / debian-slim
+    # case. Detection must fall back to os-release's VERSION_ID. Same vulnerable
+    # openssl dpkg entry, seeded under "Debian:12".
+    digests["debian-osrelease-image"] = build_oci_image(
+        FIXTURE_DIR / "debian-osrelease-image.tar",
+        layers=[
+            {
+                "etc/os-release": (
+                    b'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\n'
+                    b'NAME="Debian GNU/Linux"\n'
+                    b'VERSION_ID="12"\n'
+                    b'VERSION="12 (bookworm)"\n'
+                    b"ID=debian\n"
+                ),
+                "var/lib/dpkg/status": (
+                    b"Package: openssl\n"
+                    b"Status: install ok installed\n"
+                    b"Version: 3.0.11-1~deb12u1\n"
+                    b"Architecture: amd64\n"
+                    b"\n"
+                ),
+            },
+        ],
+    )
+
     # rpm-image: a RHEL-family layer carrying a real SQLite rpmdb. It declares
     # a known-vulnerable openssl 3.0.7-6.el9 (epoch 1, seeded -> CVE-2023-0464)
     # alongside a clean bash entry, so tests can assert findings fire only for
