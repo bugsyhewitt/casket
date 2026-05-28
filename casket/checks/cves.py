@@ -488,10 +488,130 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
     return findings
 
 
+def _cvss_score_to_severity(score: float) -> str:
+    """Map a CVSS base score to casket's qualitative severity band.
+
+    Bands follow the CVSS v3.1 / v4.0 qualitative rating scale:
+    9.0–10.0 critical, 7.0–8.9 high, 4.0–6.9 medium, 0.1–3.9 low, 0.0 info.
+    """
+    if score >= 9.0:
+        return "critical"
+    if score >= 7.0:
+        return "high"
+    if score >= 4.0:
+        return "medium"
+    if score > 0.0:
+        return "low"
+    return "info"
+
+
+# CVSS v3.x base-score metric weights (CVSS v3.1 specification, section 7.1).
+_CVSS3_AV = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}
+_CVSS3_AC = {"L": 0.77, "H": 0.44}
+# Privileges Required is scope-dependent; the higher value applies when the
+# scope is changed. We store the (unchanged, changed) pair.
+_CVSS3_PR = {"N": (0.85, 0.85), "L": (0.62, 0.68), "H": (0.27, 0.5)}
+_CVSS3_UI = {"N": 0.85, "R": 0.62}
+_CVSS3_CIA = {"H": 0.56, "L": 0.22, "N": 0.0}
+
+
+def _roundup(value: float) -> float:
+    """CVSS v3.1 Appendix A roundup: round up to one decimal place."""
+    int_input = round(value * 100_000)
+    if int_input % 10_000 == 0:
+        return int_input / 100_000.0
+    return (int(int_input / 10_000) + 1) / 10.0
+
+
+def _cvss3_base_score(vector: str) -> float | None:
+    """Compute a CVSS v3.x base score from a vector string.
+
+    Accepts vectors with or without the ``CVSS:3.x/`` prefix. Returns ``None``
+    if a required base metric is missing or malformed — the caller then falls
+    back to other severity sources rather than guessing.
+    """
+    metrics: dict[str, str] = {}
+    for part in vector.split("/"):
+        if ":" not in part:
+            continue
+        key, _, val = part.partition(":")
+        metrics[key.strip().upper()] = val.strip().upper()
+
+    try:
+        av = _CVSS3_AV[metrics["AV"]]
+        ac = _CVSS3_AC[metrics["AC"]]
+        ui = _CVSS3_UI[metrics["UI"]]
+        scope_changed = metrics["S"] == "C"
+        pr = _CVSS3_PR[metrics["PR"]][1 if scope_changed else 0]
+        conf = _CVSS3_CIA[metrics["C"]]
+        integ = _CVSS3_CIA[metrics["I"]]
+        avail = _CVSS3_CIA[metrics["A"]]
+    except KeyError:
+        return None
+
+    iss = 1.0 - ((1.0 - conf) * (1.0 - integ) * (1.0 - avail))
+    if scope_changed:
+        impact = 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02) ** 15
+    else:
+        impact = 6.42 * iss
+    exploitability = 8.22 * av * ac * pr * ui
+
+    if impact <= 0:
+        return 0.0
+    if scope_changed:
+        return _roundup(min(1.08 * (impact + exploitability), 10.0))
+    return _roundup(min(impact + exploitability, 10.0))
+
+
+def _severity_from_cvss_vector(vector: str) -> str | None:
+    """Derive a qualitative severity from a CVSS vector string, or ``None``.
+
+    Handles CVSS v3.x vectors (computing the base score). For other versions
+    (v2, v4) we return ``None`` here; numeric scores in the OSV ``severity``
+    array are not provided as raw floats, so v3 vectors are the common case and
+    the safe one to score with a small stdlib calculator.
+    """
+    v = vector.strip()
+    if v.upper().startswith("CVSS:3"):
+        score = _cvss3_base_score(v)
+        if score is not None:
+            return _cvss_score_to_severity(score)
+    return None
+
+
 def _severity_from_osv(vuln: dict) -> str:
-    """Best-effort severity from an OSV record's database_specific or CVSS."""
+    """Best-effort qualitative severity for an OSV record.
+
+    Resolution order, most authoritative first:
+
+    1. The standard OSV ``severity`` array — a list of
+       ``{"type": "CVSS_V3"|..., "score": "<vector>"}`` entries. This is where
+       OSV.dev actually records CVSS for the overwhelming majority of records;
+       we parse the CVSS v3.x vector and map its base score to a band. (The
+       previous implementation ignored this field entirely, so almost every
+       live finding silently defaulted to "high" — degrading the --fail-on
+       gate and SARIF security-severity sort.)
+    2. The non-standard ``database_specific.severity`` string (some ecosystems
+       — notably GHSA-sourced records — set this), accepted verbatim.
+    3. A conservative ``"high"`` default when neither is usable.
+    """
+    # 1. Standard OSV severity array (CVSS vectors).
+    for entry in vuln.get("severity", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        score = entry.get("score")
+        if not isinstance(score, str):
+            continue
+        derived = _severity_from_cvss_vector(score)
+        if derived is not None:
+            return derived
+
+    # 2. Non-standard per-database qualitative severity.
     spec = vuln.get("database_specific", {})
-    sev = str(spec.get("severity", "")).lower()
-    if sev in {"critical", "high", "medium", "low"}:
-        return sev
+    if isinstance(spec, dict):
+        sev = str(spec.get("severity", "")).lower()
+        if sev in {"critical", "high", "medium", "low", "info"}:
+            return sev
+
+    # 3. Conservative default.
     return "high"

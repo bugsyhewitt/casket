@@ -263,6 +263,19 @@ RPM coverage reads the modern **SQLite** rpmdb only; the legacy Berkeley DB
 silently (no finding, no crash). RPM versions are matched as full EVR strings
 (`epoch:version-release`, e.g. `1:3.0.7-6.el9`).
 
+### CVE severity
+
+Each CVE finding's severity is derived from the matched OSV record's standard
+`severity` array — the CVSS vector OSV.dev records for the vast majority of
+vulnerabilities. `casket` parses the CVSS v3.x vector, computes its base score
+with a small standard-library calculator (no new dependency), and maps it to a
+qualitative band on the CVSS v3.1 scale (`9.0–10.0` critical, `7.0–8.9` high,
+`4.0–6.9` medium, `0.1–3.9` low). If a record carries no scorable CVSS vector,
+`casket` falls back to the record's `database_specific.severity` string, and
+finally to a conservative `high`. Accurate severities matter downstream: they
+drive the `--fail-on` CI gate and the SARIF `security-severity` score that
+GitHub code-scanning uses to sort and threshold findings.
+
 Results are cached to `~/.cache/casket/osv-cache.json` (override with
 `CASKET_OSV_CACHE`). A bundled read-only seed DB resolves a small curated set
 with no network at all. Pass `--offline` to forbid network access entirely.
