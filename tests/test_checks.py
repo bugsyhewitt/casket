@@ -118,6 +118,93 @@ def test_cves_check_clean_alpine_image_no_findings(_isolate_osv_cache):
     assert findings == []
 
 
+# ---------------------------------------------------------------------------
+# RPM package extraction tests (POST_V01 Item 4)
+# ---------------------------------------------------------------------------
+
+def test_parse_rpm_header_extracts_name_version_release_epoch():
+    from tests.build_fixtures import _rpm_header_blob
+
+    blob = _rpm_header_blob(
+        name="openssl", version="3.0.7", release="6.el9", epoch=1, arch="x86_64"
+    )
+    header = cves._parse_rpm_header(blob)
+    assert header["name"] == "openssl"
+    assert header["version"] == "3.0.7"
+    assert header["release"] == "6.el9"
+    assert header["epoch"] == "1"
+    assert header["arch"] == "x86_64"
+
+
+def test_parse_rpm_header_malformed_blob_returns_empty():
+    assert cves._parse_rpm_header(b"") == {}
+    assert cves._parse_rpm_header(b"\x00\x01\x02") == {}
+    assert cves._parse_rpm_header(b"garbage that is not an rpm header at all") == {}
+
+
+def test_rpm_evr_includes_epoch_only_when_nonzero():
+    assert cves._rpm_evr({"version": "1.2", "release": "3.el9"}) == "1.2-3.el9"
+    assert cves._rpm_evr({"version": "1.2", "release": "3.el9", "epoch": "0"}) == "1.2-3.el9"
+    assert cves._rpm_evr({"version": "1.2", "release": "3.el9", "epoch": "1"}) == "1:1.2-3.el9"
+    assert cves._rpm_evr({"version": "1.2"}) == "1.2"
+    assert cves._rpm_evr({"release": "3.el9"}) is None
+
+
+def test_parse_rpmdb_sqlite_extracts_packages():
+    from tests.build_fixtures import _rpmdb_sqlite_bytes
+
+    db = _rpmdb_sqlite_bytes(
+        [
+            {"name": "openssl", "version": "3.0.7", "release": "6.el9", "epoch": 1},
+            {"name": "bash", "version": "5.1.8", "release": "6.el9"},
+        ]
+    )
+    pkgs = cves._parse_rpmdb_sqlite(db)
+    assert ("openssl", "1:3.0.7-6.el9") in pkgs
+    assert ("bash", "5.1.8-6.el9") in pkgs
+    assert len(pkgs) == 2
+
+
+def test_parse_rpmdb_sqlite_non_sqlite_returns_empty():
+    # A Berkeley DB / random blob is not a sqlite db -> empty, never a crash.
+    assert cves._parse_rpmdb_sqlite(b"\x00\x05\x16\x53 not sqlite\n") == []
+
+
+def test_cves_check_emits_finding_for_vulnerable_rpm_package(_isolate_osv_cache):
+    # The bundled seed DB maps Red Hat|openssl|1:3.0.7-6.el9 -> CVE-2023-0464,
+    # so this resolves fully offline with an empty cache.
+    img = load_tarball(fixture_path("rpm-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    findings = cves.run(img, osv_client=client)
+    assert findings, "expected a CVE finding for the vulnerable openssl"
+    by_pkg = {f.detail["package"]: f for f in findings}
+    assert "openssl" in by_pkg
+    f = by_pkg["openssl"]
+    assert f.category == "cve"
+    assert f.detail["ecosystem"] == "Red Hat"
+    assert f.detail["installed_version"] == "1:3.0.7-6.el9"
+    assert f.detail["cve_id"] == "CVE-2023-0464"
+    assert f.path_in_layer == "var/lib/rpm/rpmdb.sqlite"
+    # The clean bash package must NOT produce a finding.
+    assert "bash" not in by_pkg
+
+
+def test_cves_check_clean_rpm_image_no_findings(_isolate_osv_cache):
+    img = load_tarball(fixture_path("rpm-clean-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    findings = cves.run(img, osv_client=client)
+    assert findings == []
+
+
+def test_cves_check_legacy_rpm_bdb_skipped_silently(_isolate_osv_cache):
+    # RHEL 7/8 ship a Berkeley DB `Packages` file with no rpmdb.sqlite.
+    # casket must skip it: no findings, no exception.
+    img = load_tarball(fixture_path("rpm-legacy-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    findings = cves.run(img, osv_client=client)
+    assert findings == []
+
+
 def test_misconfig_check_running_as_root():
     img = load_tarball(fixture_path("rootuser-image.tar"))
     findings = misconfig.run(img)
