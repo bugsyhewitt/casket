@@ -118,6 +118,74 @@ def test_cves_check_clean_alpine_image_no_findings(_isolate_osv_cache):
     assert findings == []
 
 
+def test_parse_alpine_release_extracts_major_minor():
+    assert cves._parse_alpine_release("3.18.4\n") == "Alpine:v3.18"
+    assert cves._parse_alpine_release("3.20.0") == "Alpine:v3.20"
+    # MAJOR.MINOR with no patch is accepted.
+    assert cves._parse_alpine_release("3.19") == "Alpine:v3.19"
+    # Trailing edge/markers after the numeric prefix are ignored.
+    assert cves._parse_alpine_release("3.18.0_alpha20231114") == "Alpine:v3.18"
+
+
+def test_parse_alpine_release_none_on_garbage():
+    assert cves._parse_alpine_release("") is None
+    assert cves._parse_alpine_release("edge\n") is None
+    assert cves._parse_alpine_release("not a version") is None
+
+
+def test_detect_alpine_ecosystem_scans_cross_layer():
+    # etc/alpine-release lives in a separate layer from the apk db; detection
+    # is image-level and must find it.
+    img = load_tarball(fixture_path("alpine-release-image.tar"))
+    assert cves._detect_alpine_ecosystem(img) == "Alpine:v3.18"
+
+
+def test_detect_alpine_ecosystem_none_without_release_marker():
+    # alpine-image carries an apk db but no etc/alpine-release.
+    img = load_tarball(fixture_path("alpine-image.tar"))
+    assert cves._detect_alpine_ecosystem(img) is None
+
+
+def test_cves_resolves_alpine_via_release_qualified_ecosystem(_isolate_osv_cache):
+    # The vuln is seeded ONLY under the release-qualified ecosystem
+    # "Alpine:v3.18" — NOT bare "Alpine". This proves casket queries the
+    # release-qualified name (what the live OSV.dev API requires) rather than
+    # relying on the bare-ecosystem seed/cache path.
+    img = load_tarball(fixture_path("alpine-release-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    client.seed(
+        "Alpine:v3.18",
+        "busybox",
+        "1.36.0-r0",
+        [
+            {
+                "id": "CVE-2023-42366",
+                "aliases": ["CVE-2023-42366"],
+                "summary": "busybox awk heap overflow",
+                "database_specific": {"severity": "MEDIUM"},
+            }
+        ],
+    )
+    findings = cves.run(img, osv_client=client)
+    assert findings, "expected a CVE finding resolved via Alpine:v3.18"
+    f = findings[0]
+    assert f.detail["package"] == "busybox"
+    assert f.detail["cve_id"] == "CVE-2023-42366"
+    # The reported ecosystem stays the stable bare tag for output uniformity.
+    assert f.detail["ecosystem"] == "Alpine"
+
+
+def test_cves_alpine_bare_fallback_still_resolves_seed_db(_isolate_osv_cache):
+    # alpine-image has no etc/alpine-release, so the release-qualified candidate
+    # is None and casket falls back to bare "Alpine" — the bundled seed DB path.
+    # This is the pre-existing behaviour, preserved unchanged.
+    img = load_tarball(fixture_path("alpine-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    findings = cves.run(img, osv_client=client)
+    by_pkg = {f.detail["package"] for f in findings}
+    assert "busybox" in by_pkg
+
+
 # ---------------------------------------------------------------------------
 # RPM package extraction tests (POST_V01 Item 4)
 # ---------------------------------------------------------------------------

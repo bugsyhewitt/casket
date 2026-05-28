@@ -120,6 +120,36 @@ class OSVClient:
         self._save_cache()
         return vulns
 
+    def query_ecosystems(
+        self, ecosystems: list[str], package: str, version: str
+    ) -> list[dict[str, Any]]:
+        """Resolve a package across an ordered list of candidate ecosystems.
+
+        OSV.dev keys some package families under release-qualified ecosystem
+        names (e.g. Alpine vulns live under ``Alpine:v3.18``, not bare
+        ``Alpine``; Debian under ``Debian:12``). The exact qualifier depends on
+        the OS release recorded *inside the image*, which the caller resolves
+        and passes as the most specific candidate first.
+
+        We try each candidate in order and return the first non-empty result.
+        This lets a caller prefer the precise release-qualified ecosystem
+        (which the live OSV.dev API requires) while still falling back to the
+        bare ecosystem name, under which casket's bundled seed DB and warm
+        cache are keyed — so offline/seed resolution keeps working unchanged.
+
+        Empty/falsy candidates are skipped. Duplicate candidates are queried
+        once. Returns an empty list if no candidate resolves.
+        """
+        seen: set[str] = set()
+        for ecosystem in ecosystems:
+            if not ecosystem or ecosystem in seen:
+                continue
+            seen.add(ecosystem)
+            vulns = self.query(ecosystem, package, version)
+            if vulns:
+                return vulns
+        return []
+
     def seed(self, ecosystem: str, package: str, version: str, vulns: list[dict]) -> None:
         """Pre-populate the cache (used by tests and warm-start)."""
         self._cache[self._key(ecosystem, package, version)] = vulns

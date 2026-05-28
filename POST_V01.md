@@ -320,6 +320,76 @@ This makes findings actionable: instead of "layer sha256:abc123 has a leaked key
 
 **Total estimated effort: ~8.5 days** of focused implementation, spread across Phase 2 laps.
 
+All seven original items shipped by Rotation 8. Subsequent rotations extend the
+roadmap below.
+
+---
+
+## Extended directions (post-Item-7)
+
+The original 1–7 roadmap is fully shipped. These are the next-highest-value
+improvements identified by later rotations after re-assessing the codebase.
+
+### Item 8 — Alpine release-qualified OSV resolution
+
+**Priority: HIGH. ✅ IMPLEMENTED (Phase 2, Rotation 10).**
+
+**The gap.** Item 1 (Rotation 2) added Alpine package extraction and tagged
+packages with the bare ecosystem `"Alpine"`. That resolves fine against the
+bundled seed DB and the on-disk cache (both keyed on bare `Alpine`), but a
+*live* OSV.dev query for ecosystem `Alpine` returns nothing — OSV keys Alpine
+vulns under release-qualified ecosystems like `Alpine:v3.18`. So casket's
+flagship Alpine CVE coverage was effectively **seed-only** against the real
+API: any Alpine package not hand-seeded was invisible. The Rotation 2 worker
+explicitly flagged this as a deferred follow-up.
+
+**What shipped.** casket now reads `etc/alpine-release` (a one-line plaintext
+version, e.g. `3.18.4`) from the image, derives the release-qualified ecosystem
+`Alpine:vMAJOR.MINOR` (`Alpine:v3.18`), and queries that *first*, falling back
+to bare `Alpine`. Implementation:
+
+- `_parse_alpine_release(text)` in `casket/checks/cves.py` extracts MAJOR.MINOR
+  from the release line (tolerates `3.18`, `3.18.4`, `3.18.0_alpha…`) and
+  returns the OSV qualifier, or `None` on garbage.
+- `_detect_alpine_ecosystem(image)` is an **image-level** scan:
+  `etc/alpine-release` and `lib/apk/db/installed` frequently live in different
+  layers, so detection scans all layers and the first parseable release wins.
+- `OSVClient.query_ecosystems(ecosystems, package, version)` in
+  `casket/osv.py` tries an ordered candidate list and returns the first
+  non-empty result (skips falsy/`None` candidates, dedupes). `cves.run()` calls
+  it for Alpine packages with `[Alpine:v3.18, Alpine]`.
+- The reported `detail["ecosystem"]` stays the bare `"Alpine"` tag for output
+  uniformity; the qualifier is a query-time concern only.
+
+Zero new dependencies. Covered by 9 new tests (release parsing, cross-layer
+detection, the candidate-ordering/fallback/dedupe logic in `query_ecosystems`,
+plus an E2E test proving the live query path sends `Alpine:v3.18`) against a
+new `alpine-release-image` fixture that places `etc/alpine-release` in a
+separate layer from the apk db.
+
+**Why this was the pick.** It's a correctness fix to the suite's *most
+common base image* (`*-alpine`) coverage — the one POST_V01 ranked CRITICAL —
+that was silently degraded to seed-only against the live API. High value,
+low complexity, zero new dependencies, no scope creep.
+
+### Already-shipped beyond the table
+
+- **`--fail-on` severity gate** (Rotation 9): CI exit-code control so a single
+  INFO finding doesn't break a build the way a leaked AWS key does. See
+  `exit_code()` / `FAIL_ON_CHOICES` in `casket/scanner.py`.
+
+### Candidate next items (not yet done)
+
+- **Debian/Ubuntu release-qualified ecosystems** — the same gap Item 8 fixes
+  for Alpine exists for Debian (OSV keys `Debian:12`). Read `etc/debian_version`
+  or `etc/os-release` `VERSION_ID` and query `Debian:<major>` first. Same
+  pattern, same `query_ecosystems` plumbing — now in place.
+- **Alpine `edge` handling** — `etc/alpine-release` on edge images is non-numeric;
+  OSV has no `Alpine:edge`. Currently falls back to bare `Alpine` (fine, but
+  could log a note).
+- **CVSS `security-severity` in SARIF** — emit the GitHub-consumed
+  `properties.security-severity` float so code-scanning sorts by severity.
+
 ---
 
 ## What is NOT on this list (and why)
