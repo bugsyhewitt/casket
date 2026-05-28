@@ -247,6 +247,14 @@ than the package database — and queries the release-qualified ecosystem
 seed DB and on-disk cache are keyed) when no release marker is present. This is
 what makes live Alpine CVE lookups against the OSV.dev API actually resolve.
 
+The same release-qualified resolution applies to **Debian/Ubuntu**: OSV.dev
+keys Debian vulnerabilities under `Debian:12` (the major release number), not a
+bare `Debian`. `casket` reads the release from `etc/debian_version`, falling
+back to the `VERSION_ID` field of `etc/os-release` (Ubuntu and `*-slim` images
+that ship no `etc/debian_version`), scanning across layers. It queries the
+release-qualified ecosystem (`Debian:12`) first and falls back to bare `Debian`
+(under which the seed DB and cache are keyed) when no release marker is present.
+
 RPM coverage reads the modern **SQLite** rpmdb only; the legacy Berkeley DB
 `var/lib/rpm/Packages` (RHEL 7/8, CentOS 7) has no stdlib parser and is skipped
 silently (no finding, no crash). RPM versions are matched as full EVR strings

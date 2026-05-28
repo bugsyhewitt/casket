@@ -187,6 +187,113 @@ def test_cves_alpine_bare_fallback_still_resolves_seed_db(_isolate_osv_cache):
 
 
 # ---------------------------------------------------------------------------
+# Debian release-qualified ecosystem tests (Rotation 11)
+# ---------------------------------------------------------------------------
+
+def test_parse_debian_version_extracts_major():
+    assert cves._parse_debian_version("12.4\n") == "Debian:12"
+    assert cves._parse_debian_version("11") == "Debian:11"
+    # A bare major with a trailing minor/patch keeps the major only.
+    assert cves._parse_debian_version("10.13") == "Debian:10"
+
+
+def test_parse_debian_version_none_on_codename():
+    # Testing/unstable releases carry a non-numeric codename, not a version.
+    assert cves._parse_debian_version("bookworm/sid\n") is None
+    assert cves._parse_debian_version("") is None
+
+
+def test_parse_os_release_extracts_version_id():
+    text = (
+        'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\n'
+        'VERSION_ID="12"\n'
+        "ID=debian\n"
+    )
+    assert cves._parse_os_release_debian(text) == "Debian:12"
+    # Ubuntu's VERSION_ID is a dotted version; the major is taken.
+    ubuntu = 'NAME="Ubuntu"\nVERSION_ID="22.04"\nID=ubuntu\n'
+    assert cves._parse_os_release_debian(ubuntu) == "Debian:22"
+
+
+def test_parse_os_release_none_without_version_id():
+    assert cves._parse_os_release_debian("ID=debian\nNAME=Debian\n") is None
+
+
+def test_detect_debian_ecosystem_scans_cross_layer():
+    # etc/debian_version lives in a separate layer from the dpkg db; detection
+    # is image-level and must find it.
+    img = load_tarball(fixture_path("debian-release-image.tar"))
+    assert cves._detect_debian_ecosystem(img) == "Debian:12"
+
+
+def test_detect_debian_ecosystem_falls_back_to_os_release():
+    # No etc/debian_version present; detection must use os-release VERSION_ID.
+    img = load_tarball(fixture_path("debian-osrelease-image.tar"))
+    assert cves._detect_debian_ecosystem(img) == "Debian:12"
+
+
+def test_detect_debian_ecosystem_none_without_marker():
+    # old-package fixture carries no Debian release marker at all.
+    img = load_tarball(fixture_path("old-package.tar"))
+    assert cves._detect_debian_ecosystem(img) is None
+
+
+def test_cves_resolves_debian_via_release_qualified_ecosystem(_isolate_osv_cache):
+    # The vuln is seeded ONLY under the release-qualified ecosystem "Debian:12"
+    # — NOT bare "Debian". This proves casket queries the release-qualified name
+    # (what the live OSV.dev API requires) rather than the bare-ecosystem path.
+    img = load_tarball(fixture_path("debian-release-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    client.seed(
+        "Debian:12",
+        "openssl",
+        "3.0.11-1~deb12u1",
+        [
+            {
+                "id": "CVE-2023-5678",
+                "aliases": ["CVE-2023-5678"],
+                "summary": "openssl X9.42 DH slow key check",
+                "database_specific": {"severity": "MEDIUM"},
+            }
+        ],
+    )
+    findings = cves.run(img, osv_client=client)
+    assert findings, "expected a CVE finding resolved via Debian:12"
+    f = findings[0]
+    assert f.detail["package"] == "openssl"
+    assert f.detail["cve_id"] == "CVE-2023-5678"
+    # The reported ecosystem stays the stable bare tag for output uniformity.
+    assert f.detail["ecosystem"] == "Debian"
+
+
+def test_cves_resolves_debian_via_os_release_fallback(_isolate_osv_cache):
+    # Release marker only in os-release; resolution still uses "Debian:12".
+    img = load_tarball(fixture_path("debian-osrelease-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    client.seed(
+        "Debian:12",
+        "openssl",
+        "3.0.11-1~deb12u1",
+        [{"id": "CVE-2023-5678", "aliases": ["CVE-2023-5678"], "summary": "x"}],
+    )
+    findings = cves.run(img, osv_client=client)
+    assert findings, "expected a CVE finding via os-release-derived Debian:12"
+    assert findings[0].detail["cve_id"] == "CVE-2023-5678"
+
+
+def test_cves_debian_bare_fallback_still_resolves_seed_db(_isolate_osv_cache):
+    # The bundled seed DB keys the vuln under bare "Debian". With an image that
+    # has a release marker, the release-qualified candidate is tried first and
+    # misses (not in seed), then the bare "Debian" fallback hits the seed DB —
+    # proving the fallback chain works end-to-end offline.
+    img = load_tarball(fixture_path("debian-release-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    findings = cves.run(img, osv_client=client)
+    by_pkg = {f.detail["package"] for f in findings}
+    assert "openssl" in by_pkg
+
+
+# ---------------------------------------------------------------------------
 # RPM package extraction tests (POST_V01 Item 4)
 # ---------------------------------------------------------------------------
 
