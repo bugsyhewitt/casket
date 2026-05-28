@@ -439,11 +439,52 @@ crashes. Zero new dependencies (stdlib `json`). Covered by 13 new tests in
 contract, severity-ordering monotonicity across a mixed document, and the
 unknown-severity default path).
 
+### Item 11 — CVE severity from the standard OSV CVSS vector
+
+**Priority: HIGH. ✅ IMPLEMENTED (Phase 2, Rotation 13).**
+
+**The gap.** `_severity_from_osv` read *only* the non-standard
+`database_specific.severity` string. But OSV.dev records severity for the vast
+majority of vulnerabilities in the **standard** top-level `severity` array as
+`{"type": "CVSS_V3", "score": "<vector>"}` — and casket ignored it entirely.
+So almost every *live* CVE finding silently defaulted to the hardcoded `"high"`,
+regardless of its real CVSS score. That degraded three downstream consumers at
+once: the `--fail-on` severity gate (Rotation 9), the SARIF
+`security-severity` float GitHub uses to sort/gate (Item 10, Rotation 12), and
+plain json/h1md severity accuracy — every finding looked equally urgent.
+
+**What shipped.** `casket/checks/cves.py` now parses the standard OSV
+`severity` array. A small stdlib CVSS v3.x base-score calculator
+(`_cvss3_base_score`, faithful to the CVSS v3.1 spec Appendix A roundup and
+metric weights — validated against published reference vectors) computes the
+score from the vector, and `_cvss_score_to_severity` maps it to casket's bands
+on the CVSS v3.1 qualitative scale (≥9.0 critical, ≥7.0 high, ≥4.0 medium, >0
+low, 0 info). Resolution order in `_severity_from_osv`: (1) standard CVSS
+vector from the `severity` array, (2) `database_specific.severity` verbatim,
+(3) conservative `"high"` default. Vectors with a missing/garbled base metric,
+non-v3 types (CVSS v2/v4), and malformed array entries all degrade gracefully
+to the next source — never a crash. Zero new dependencies (stdlib only).
+Covered by 10 new tests in `tests/test_checks.py` (reference-vector scores,
+prefix-less vectors, missing-metric/garbage → None, band boundaries, the
+array-beats-database_specific precedence, non-v3 fallback, no-signal default,
+malformed-entry tolerance, and an E2E proving a finding's severity derives from
+a seeded 9.8 vector rather than the old default).
+
+**Why this was the pick.** It's a correctness fix at the exact point three
+already-shipped features (`--fail-on`, SARIF `security-severity`, severity
+rendering) consume — and they were all built on a value that was wrong for live
+findings. High value, low complexity, zero new dependencies, no scope creep, no
+architecture change.
+
 ### Candidate next items (not yet done)
 
 - **Alpine `edge` handling** — `etc/alpine-release` on edge images is non-numeric;
   OSV has no `Alpine:edge`. Currently falls back to bare `Alpine` (fine, but
   could log a note).
+- **CVSS v4 / v2 vector scoring** — Rotation 13 scores v3.x vectors only;
+  v4 (`CVSS:4.0/…`) and legacy v2 vectors fall through to
+  `database_specific.severity`. Adding a v4 calculator would tighten coverage
+  for the newest records.
 
 ---
 
