@@ -29,6 +29,90 @@ rules:
     severity: critical
     regex: "-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"
 
+  # ---------------------------------------------------------------------------
+  # Expanded high-precision provider token patterns (POST_V01 Item 6).
+  # Each pattern has a structural prefix and/or fixed length that keeps the
+  # false-positive rate negligible — no entropy analysis required. These cover
+  # the real-world tokens teams accidentally bake into images.
+  # ---------------------------------------------------------------------------
+
+  - id: github_pat
+    title: "GitHub personal access token"
+    severity: high
+    regex: "ghp_[A-Za-z0-9]{36}"
+
+  - id: github_oauth
+    title: "GitHub OAuth access token"
+    severity: high
+    regex: "gho_[A-Za-z0-9]{36}"
+
+  - id: github_actions_token
+    title: "GitHub Actions / app token"
+    severity: high
+    regex: "gh[su]_[A-Za-z0-9]{36}"
+
+  - id: slack_token
+    title: "Slack API token"
+    severity: high
+    regex: "xox[baprs]-[0-9A-Za-z-]{10,}"
+
+  - id: stripe_secret_key
+    title: "Stripe live secret key"
+    severity: critical
+    regex: "sk_live_[0-9a-zA-Z]{24,}"
+
+  - id: stripe_restricted_key
+    title: "Stripe live restricted key"
+    severity: high
+    regex: "rk_live_[0-9a-zA-Z]{24,}"
+
+  - id: gcp_service_account_key
+    title: "GCP service-account key (JSON)"
+    severity: critical
+    regex: "\"type\"\\s*:\\s*\"service_account\""
+
+  - id: sendgrid_api_key
+    title: "SendGrid API key"
+    severity: high
+    regex: "SG\\.[A-Za-z0-9_\\-]{22}\\.[A-Za-z0-9_\\-]{43}"
+
+  - id: npm_token
+    title: "npm automation token"
+    severity: high
+    regex: "npm_[A-Za-z0-9]{36}"
+
+  - id: docker_hub_pat
+    title: "Docker Hub personal access token"
+    severity: high
+    regex: "dckr_pat_[A-Za-z0-9_\\-]{27}"
+
+  - id: jwt_token
+    title: "JSON Web Token (header.payload.signature)"
+    severity: medium
+    regex: "eyJ[A-Za-z0-9_\\-]+\\.eyJ[A-Za-z0-9_\\-]+\\.[A-Za-z0-9_\\-]+"
+
+  - id: heroku_api_key
+    title: "Heroku API key"
+    severity: high
+    # Context-guarded: a UUID alone is too noisy, so require a heroku-ish key
+    # assignment before the UUID to keep precision high.
+    regex: "(?i)heroku[a-z0-9_\\-]*\\s*[=:]\\s*['\"]?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+  - id: mailchimp_api_key
+    title: "Mailchimp API key"
+    severity: high
+    regex: "[0-9a-f]{32}-us[0-9]{1,2}"
+
+  - id: twilio_account_sid
+    title: "Twilio account SID"
+    severity: medium
+    regex: "AC[0-9a-f]{32}"
+
+  - id: twilio_api_key_sid
+    title: "Twilio API key SID"
+    severity: medium
+    regex: "SK[0-9a-f]{32}"
+
   - id: high_entropy_string
     title: "High-entropy string (possible secret/token)"
     severity: medium

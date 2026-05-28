@@ -5,7 +5,8 @@
 `casket` inspects container images for three classes of problems and tells you
 *which layer* introduced each one:
 
-- **leaked credentials** — AWS keys, API tokens, private keys planted in a layer
+- **leaked credentials** — AWS keys, provider tokens (GitHub, Slack, Stripe,
+  SendGrid, npm, GCP, Twilio, …), JWTs, private keys, and high-entropy secrets
 - **known-vulnerable packages** — PyPI, Debian, Alpine, and RPM (RHEL/Fedora)
   packages resolved against [OSV.dev](https://osv.dev)
 - **misconfigurations** — `USER root`, exposed ports, secret-like env vars
@@ -144,6 +145,31 @@ casket --image ./myapp.tar --checks all --format sarif > casket.sarif
   "rule": "aws_secret_access_key"
 }
 ```
+
+## Credential coverage
+
+The creds check scans the *contents* of every text file in every layer. It runs
+two passes: a set of high-precision regex patterns first, then Shannon-entropy
+analysis for anything that doesn't match a known format.
+
+High-precision patterns (no entropy, negligible false-positive rate):
+
+| group | patterns |
+|---|---|
+| AWS | secret access key, access key id |
+| GitHub | personal access token (`ghp_`), OAuth (`gho_`), app/Actions (`ghs_`/`ghu_`) |
+| Payments | Stripe live secret (`sk_live_`) and restricted (`rk_live_`) keys |
+| Messaging | Slack (`xox[baprs]-`), SendGrid (`SG.`), Twilio account/API SIDs |
+| Packaging | npm automation token (`npm_`), Docker Hub PAT (`dckr_pat_`) |
+| Cloud / misc | GCP service-account key JSON, Heroku API key, Mailchimp key |
+| Generic | API token/key assignments, JWTs (`eyJ…`), private-key blocks |
+
+Each pattern carries its own severity (e.g. a Stripe live secret or GCP
+service-account key is `critical`; a Twilio SID, which is lower-confidence, is
+`medium`). The entropy pass catches custom/internal tokens that match no known
+format and emits a redacted 8-character prefix for triage — never the full
+secret. Rules live in `casket/ruledata/creds.yaml`; adding a pattern is a
+one-line YAML edit.
 
 ## How CVE lookups stay polite
 

@@ -10,3 +10,10 @@ venv/
 *.tmp
 # OSV cache (machine-local)
 .cache/
+# Secret-bearing test fixtures are generated at test time by
+# tests/build_fixtures.py (conftest rebuilds them every session). They are not
+# committed because their fabricated token-shaped strings trip secret-scanning
+# push protection. Regenerate locally with `python -m tests.build_fixtures`.
+tests/fixtures/multi-secrets-image.tar
+tests/fixtures/entropy-image.tar
+tests/fixtures/entropy-logfile-image.tar
