@@ -416,13 +416,34 @@ the bare-`Debian` seed-DB fallback chain) against new `debian-release-image`
 `debian-osrelease-image` (os-release-only) fixtures, plus a bare
 `Debian|openssl|3.0.11-1~deb12u1` → CVE-2023-5678 seed entry.
 
+### Item 10 — CVSS `security-severity` in SARIF output
+
+**Priority: HIGH. ✅ IMPLEMENTED (Phase 2, Rotation 12).**
+
+Item 2 (SARIF) originally specified a `properties.security-severity` float, but
+the shipped emitter never produced it: rules and results carried only the
+qualitative `severity` string. GitHub code-scanning sorts and gates findings by
+the CVSS-like `security-severity` float (a *string* per GitHub's ingest
+contract), so without it casket's SARIF appeared in the Security tab but could
+not be ranked or threshold-gated by severity — every finding looked equally
+urgent.
+
+**What shipped.** `_render_sarif()` in `casket/findings.py` now emits
+`properties.security-severity` on both every `reportingDescriptor` (rule, where
+GitHub reads it) and every `result`. The float follows the Item 2 table:
+CRITICAL=`"9.5"`, HIGH=`"7.5"`, MEDIUM=`"5.0"`, LOW=`"2.0"`, INFO=`"0.0"`,
+via the `_SEVERITY_TO_SECURITY_SEVERITY` map and `_security_severity()` helper;
+an out-of-vocabulary severity defaults to a safe mid-range `"5.0"` and never
+crashes. Zero new dependencies (stdlib `json`). Covered by 13 new tests in
+`tests/test_sarif.py` (per-severity rule + result floats, string-type/range
+contract, severity-ordering monotonicity across a mixed document, and the
+unknown-severity default path).
+
 ### Candidate next items (not yet done)
 
 - **Alpine `edge` handling** — `etc/alpine-release` on edge images is non-numeric;
   OSV has no `Alpine:edge`. Currently falls back to bare `Alpine` (fine, but
   could log a note).
-- **CVSS `security-severity` in SARIF** — emit the GitHub-consumed
-  `properties.security-severity` float so code-scanning sorts by severity.
 
 ---
 

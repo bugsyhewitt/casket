@@ -162,8 +162,11 @@ over env vars. Credentials are never logged.
 - `--format sarif` — [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/)
   for CI/CD code-scanning ingest. Each finding type becomes a `rule` and each
   finding a `result`; severity maps to SARIF levels (CRITICAL/HIGH → `error`,
-  MEDIUM → `warning`, LOW/INFO → `note`). Feed it straight to GitHub Advanced
-  Security via `github/codeql-action/upload-sarif`.
+  MEDIUM → `warning`, LOW/INFO → `note`). Each rule and result also carries a
+  `properties.security-severity` float — the CVSS-like score GitHub
+  code-scanning uses to sort and gate findings (CRITICAL=9.5, HIGH=7.5,
+  MEDIUM=5.0, LOW=2.0, INFO=0.0). Feed it straight to GitHub Advanced Security
+  via `github/codeql-action/upload-sarif`.
 
 ```bash
 casket --image ./myapp.tar --checks all --format sarif > casket.sarif

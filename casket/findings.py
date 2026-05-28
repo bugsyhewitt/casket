@@ -42,6 +42,19 @@ _SEVERITY_TO_SARIF_LEVEL = {
     "info": "note",
 }
 
+# GitHub code-scanning sorts and gates findings by the CVSS-like float in
+# ``properties.security-severity`` (a *string*, per GitHub's ingest contract).
+# Values follow POST_V01 Item 2: critical=9.5, high=7.5, medium=5.0, low=2.0,
+# info=0.0. The float lands on both the rule's defaultConfiguration-adjacent
+# ``properties`` (where GitHub reads it) and each result's properties.
+_SEVERITY_TO_SECURITY_SEVERITY = {
+    "critical": "9.5",
+    "high": "7.5",
+    "medium": "5.0",
+    "low": "2.0",
+    "info": "0.0",
+}
+
 
 @dataclass
 class Finding:
@@ -128,6 +141,11 @@ def _sarif_level(severity: str) -> str:
     return _SEVERITY_TO_SARIF_LEVEL.get(severity, "warning")
 
 
+def _security_severity(severity: str) -> str:
+    """CVSS-like float (as a string) GitHub code-scanning sorts/gates on."""
+    return _SEVERITY_TO_SECURITY_SEVERITY.get(severity, "5.0")
+
+
 def _sarif_message(finding: Finding) -> str:
     """Human-readable result message, enriched with the salient detail fields."""
     parts = [finding.title]
@@ -167,7 +185,13 @@ def _render_sarif(findings: list[Finding], *, image: str) -> str:
                     "name": f.category,
                     "shortDescription": {"text": f.title},
                     "defaultConfiguration": {"level": _sarif_level(f.severity)},
-                    "properties": {"category": f.category, "severity": f.severity},
+                    "properties": {
+                        "category": f.category,
+                        "severity": f.severity,
+                        # GitHub code-scanning reads the CVSS-like float here on
+                        # the reportingDescriptor to sort/gate by severity.
+                        "security-severity": _security_severity(f.severity),
+                    },
                 }
             )
 
@@ -190,6 +214,7 @@ def _render_sarif(findings: list[Finding], *, image: str) -> str:
                 "properties": {
                     "category": f.category,
                     "severity": f.severity,
+                    "security-severity": _security_severity(f.severity),
                     "image": image,
                     "layer_sha": f.layer_sha,
                     **{k: v for k, v in f.detail.items()},

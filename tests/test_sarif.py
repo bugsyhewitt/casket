@@ -152,3 +152,79 @@ def test_sarif_result_carries_provenance_properties():
     assert props["image"] == "example.tar"
     assert props["layer_sha"].startswith("sha256:")
     assert props["category"] in {"creds", "misconfig", "cve"}
+
+
+# --- security-severity (GitHub code-scanning sort/gate float) ---------------
+
+_SECURITY_SEVERITY = {
+    "critical": "9.5",
+    "high": "7.5",
+    "medium": "5.0",
+    "low": "2.0",
+    "info": "0.0",
+}
+
+
+@pytest.mark.parametrize(("severity", "expected"), list(_SECURITY_SEVERITY.items()))
+def test_sarif_rule_security_severity_per_severity(severity, expected):
+    """Each rule carries the CVSS-like float GitHub reads off the descriptor."""
+    f = Finding(
+        category="misconfig",
+        title="t",
+        severity=severity,
+        layer_sha="sha256:x",
+        path_in_layer="<image config>",
+        detail={"rule": f"r_{severity}"},
+    )
+    doc = json.loads(render([f], "sarif", image="i.tar"))
+    rule = doc["runs"][0]["tool"]["driver"]["rules"][0]
+    ss = rule["properties"]["security-severity"]
+    assert ss == expected
+    # Must be a string per GitHub's ingest contract, and parse as a float.
+    assert isinstance(ss, str)
+    assert 0.0 <= float(ss) <= 10.0
+
+
+@pytest.mark.parametrize(("severity", "expected"), list(_SECURITY_SEVERITY.items()))
+def test_sarif_result_security_severity_per_severity(severity, expected):
+    """Each result mirrors the security-severity float in its properties."""
+    f = Finding(
+        category="cve",
+        title="t",
+        severity=severity,
+        layer_sha="sha256:x",
+        path_in_layer="usr/lib/x",
+        detail={"cve_id": f"CVE-0000-{severity}"},
+    )
+    res = json.loads(render([f], "sarif", image="i.tar"))["runs"][0]["results"][0]
+    assert res["properties"]["security-severity"] == expected
+    assert isinstance(res["properties"]["security-severity"], str)
+
+
+def test_sarif_security_severity_orders_by_severity():
+    """Higher logical severity yields a strictly larger security-severity float."""
+    severities = ["info", "low", "medium", "high", "critical"]
+    floats = [float(_SECURITY_SEVERITY[s]) for s in severities]
+    assert floats == sorted(floats)
+    # And the emitter agrees with the table for a full mixed document.
+    rules = _doc()["runs"][0]["tool"]["driver"]["rules"]
+    for rule in rules:
+        sev = rule["properties"]["severity"]
+        assert rule["properties"]["security-severity"] == _SECURITY_SEVERITY[sev]
+
+
+def test_sarif_unknown_severity_defaults_midrange():
+    """An out-of-vocabulary severity gets a safe mid-range float, never crashes."""
+    f = Finding(
+        category="creds",
+        title="weird",
+        severity="bogus",
+        layer_sha="sha256:z",
+        path_in_layer="app/x",
+        detail={"rule": "r"},
+    )
+    doc = json.loads(render([f], "sarif", image="i.tar"))
+    rule = doc["runs"][0]["tool"]["driver"]["rules"][0]
+    res = doc["runs"][0]["results"][0]
+    assert rule["properties"]["security-severity"] == "5.0"
+    assert res["properties"]["security-severity"] == "5.0"
