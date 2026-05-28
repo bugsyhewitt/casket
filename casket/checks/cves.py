@@ -27,15 +27,20 @@ dependency. OSV ecosystem name: ``"Red Hat"`` (per osv.dev's ecosystem list);
 we tag RPM packages with the bare ecosystem so the cache-first / seed DB path
 resolves them deterministically offline, mirroring the Alpine decision above.
 
-[Worker decision: Alpine OSV ecosystem name — Rotation 2, POST_V01 Item 1]
+[Worker decision: Alpine release-qualified ecosystem — Rotation 10, POST_V01 Item 8]
 OSV.dev keys Alpine vulns under release-qualified ecosystems like
-``Alpine:v3.18``, not a bare ``Alpine``. casket cannot reliably know the
-release version of an arbitrary layer without parsing ``etc/alpine-release``
-(which is not guaranteed present in every layer). We therefore tag Alpine
-packages with the bare ecosystem ``"Alpine"`` so the cache-first / seed DB
-path resolves them deterministically offline. The OSVClient could be taught to
-fan out across release-qualified ecosystems against the live API as a later
-focused improvement; that is explicitly out of scope for this single change.
+``Alpine:v3.18``, not a bare ``Alpine``. The Rotation 2 implementation tagged
+Alpine packages with the bare ecosystem ``"Alpine"``, which the bundled seed
+DB / disk cache resolve fine — but a *live* OSV.dev query for bare ``Alpine``
+returns nothing, so casket's flagship Alpine CVE coverage was effectively
+seed-only against the real API. This rotation closes that gap: we read
+``etc/alpine-release`` (a one-line plaintext version, e.g. ``3.18.4``) from the
+image, derive the release-qualified ecosystem ``Alpine:vMAJOR.MINOR``
+(``Alpine:v3.18``), and query that *first*, falling back to bare ``Alpine``.
+The release-qualified name is what the live API needs; the bare fallback keeps
+the seed DB and warm cache (both keyed on bare ``Alpine``) resolving offline
+exactly as before. If no ``etc/alpine-release`` is present we query bare
+``Alpine`` only — identical to the previous behaviour, never a crash.
 """
 
 from __future__ import annotations
@@ -56,6 +61,11 @@ _DIST_INFO_RE = re.compile(r"\.(dist-info|egg-info)/(METADATA|PKG-INFO)$")
 _DPKG_STATUS = "var/lib/dpkg/status"
 _APK_INSTALLED = "lib/apk/db/installed"
 _RPMDB_SQLITE = "var/lib/rpm/rpmdb.sqlite"
+_ALPINE_RELEASE = "etc/alpine-release"
+
+# An Alpine release line looks like ``3.18.4`` (or rarely ``3.18``). We keep the
+# MAJOR.MINOR pair to build the OSV ecosystem qualifier ``Alpine:vMAJOR.MINOR``.
+_ALPINE_RELEASE_RE = re.compile(r"^(\d+)\.(\d+)(?:\.\d+)?")
 
 # RPM header tags we care about (see lib/rpmtag.h in the rpm sources).
 _RPMTAG_NAME = 1000
@@ -138,6 +148,40 @@ def _parse_apk_installed(text: str) -> list[tuple[str, str]]:
     if name and version:
         pkgs.append((name, version))
     return pkgs
+
+
+def _parse_alpine_release(text: str) -> str | None:
+    """Derive the OSV ecosystem qualifier from an ``etc/alpine-release`` line.
+
+    The file holds a single version like ``3.18.4`` (sometimes ``3.18`` or with
+    a trailing ``_alpha``/edge marker). We extract MAJOR.MINOR and return the
+    OSV ecosystem qualifier ``Alpine:vMAJOR.MINOR`` (e.g. ``Alpine:v3.18``).
+    Returns ``None`` if no recognisable version is found — the caller then
+    falls back to the bare ``Alpine`` ecosystem.
+    """
+    for line in text.splitlines():
+        m = _ALPINE_RELEASE_RE.match(line.strip())
+        if m:
+            return f"Alpine:v{m.group(1)}.{m.group(2)}"
+    return None
+
+
+def _detect_alpine_ecosystem(image: Image) -> str | None:
+    """Scan an image for ``etc/alpine-release`` and return its ecosystem tag.
+
+    ``etc/alpine-release`` and ``lib/apk/db/installed`` can live in different
+    layers, so release detection is an image-level pass: the first layer that
+    carries a parseable release wins. Returns the release-qualified ecosystem
+    (e.g. ``Alpine:v3.18``) or ``None`` if no release marker is present.
+    """
+    for layer in image.layers:
+        for path, _size, reader in layer.iter_files():
+            if path == _ALPINE_RELEASE:
+                text = reader().decode("utf-8", errors="ignore")
+                qualified = _parse_alpine_release(text)
+                if qualified:
+                    return qualified
+    return None
 
 
 def _parse_rpm_header(blob: bytes) -> dict[str, str]:
@@ -306,9 +350,22 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
     client = osv_client or OSVClient()
     findings: list[Finding] = []
 
+    # Resolve the release-qualified Alpine ecosystem once per image. OSV.dev
+    # keys Alpine vulns under e.g. "Alpine:v3.18"; querying that (with a bare
+    # "Alpine" fallback for the seed DB / warm cache) is what makes live Alpine
+    # CVE lookups actually work. None when the image carries no release marker.
+    alpine_ecosystem = _detect_alpine_ecosystem(image)
+
     for layer in image.layers:
         for pkg in _extract_packages(layer):
-            vulns = client.query(pkg.ecosystem, pkg.name, pkg.version)
+            if pkg.ecosystem == "Alpine":
+                # Release-qualified first (live API), bare "Alpine" fallback
+                # (seed DB / cache). query_ecosystems dedupes and skips falsy.
+                vulns = client.query_ecosystems(
+                    [alpine_ecosystem, "Alpine"], pkg.name, pkg.version
+                )
+            else:
+                vulns = client.query(pkg.ecosystem, pkg.name, pkg.version)
             for vuln in vulns:
                 cve_id = vuln.get("id", "UNKNOWN")
                 aliases = vuln.get("aliases", [])

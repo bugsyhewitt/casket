@@ -75,3 +75,39 @@ def test_network_failure_degrades_to_empty(_isolate_osv_cache, monkeypatch):
     monkeypatch.setattr(httpx, "post", _post)
     client = OSVClient(cache_path=_isolate_osv_cache)
     assert client.query("PyPI", "x", "1") == []
+
+
+def test_query_ecosystems_prefers_first_non_empty(_isolate_osv_cache):
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    # Only the release-qualified ecosystem has a vuln; bare does not.
+    client.seed("Alpine:v3.18", "busybox", "1.36.0-r0", [{"id": "OSV-REL"}])
+    vulns = client.query_ecosystems(
+        ["Alpine:v3.18", "Alpine"], "busybox", "1.36.0-r0"
+    )
+    assert vulns == [{"id": "OSV-REL"}]
+
+
+def test_query_ecosystems_falls_back_to_bare(_isolate_osv_cache):
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    # Only the bare ecosystem resolves (seed-DB style); the release-qualified
+    # candidate misses, so we fall through to "Alpine".
+    client.seed("Alpine", "busybox", "1.36.0-r0", [{"id": "OSV-BARE"}])
+    vulns = client.query_ecosystems(
+        ["Alpine:v3.20", "Alpine"], "busybox", "1.36.0-r0"
+    )
+    assert vulns == [{"id": "OSV-BARE"}]
+
+
+def test_query_ecosystems_skips_none_and_dedupes(_isolate_osv_cache, monkeypatch):
+    calls = []
+
+    def _boom(url, json=None, timeout=None):
+        calls.append(json)
+        raise AssertionError("offline must not hit network")
+
+    monkeypatch.setattr(httpx, "post", _boom)
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    # None candidate is skipped; the duplicate "Alpine" is queried once. No
+    # match anywhere -> empty list, and (offline) no network attempt.
+    assert client.query_ecosystems([None, "Alpine", "Alpine"], "x", "1") == []
+    assert calls == []

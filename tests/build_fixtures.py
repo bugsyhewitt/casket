@@ -299,6 +299,33 @@ def build_all() -> dict[str, str]:
         ],
     )
 
+    # alpine-release-image: exercises release-qualified OSV resolution. The
+    # base layer carries etc/alpine-release ("3.18.4") in a *different* layer
+    # than lib/apk/db/installed, so the image-level release scan must find it
+    # cross-layer. The apk db declares a vulnerable busybox; the test seeds the
+    # vuln under the release-qualified ecosystem "Alpine:v3.18" (NOT bare
+    # "Alpine") to prove the release-qualified query path is what resolves it.
+    digests["alpine-release-image"] = build_oci_image(
+        FIXTURE_DIR / "alpine-release-image.tar",
+        layers=[
+            {
+                "etc/alpine-release": b"3.18.4\n",
+            },
+            {
+                "lib/apk/db/installed": (
+                    b"C:Q1bYYY==\n"
+                    b"P:busybox\n"
+                    b"V:1.36.0-r0\n"
+                    b"A:x86_64\n"
+                    b"T:Size optimized toolbox of many common UNIX utilities\n"
+                    b"U:https://busybox.net/\n"
+                    b"L:GPL-2.0-only\n"
+                    b"\n"
+                ),
+            },
+        ],
+    )
+
     # rpm-image: a RHEL-family layer carrying a real SQLite rpmdb. It declares
     # a known-vulnerable openssl 3.0.7-6.el9 (epoch 1, seeded -> CVE-2023-0464)
     # alongside a clean bash entry, so tests can assert findings fire only for

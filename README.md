@@ -239,6 +239,14 @@ resolves each `(ecosystem, name, version)` against OSV.dev:
 | Alpine | `lib/apk/db/installed` | `python:*-alpine`, `nginx:alpine`, etc. |
 | Red Hat | `var/lib/rpm/rpmdb.sqlite` | RHEL 9+, Fedora, Amazon Linux 2023 |
 
+OSV.dev keys Alpine vulnerabilities under **release-qualified** ecosystems
+(`Alpine:v3.18`), not a bare `Alpine`. `casket` reads `etc/alpine-release` from
+the image — scanning across layers, since it often lives in a different layer
+than the package database — and queries the release-qualified ecosystem
+(`Alpine:v3.18`) first, falling back to bare `Alpine` (under which the bundled
+seed DB and on-disk cache are keyed) when no release marker is present. This is
+what makes live Alpine CVE lookups against the OSV.dev API actually resolve.
+
 RPM coverage reads the modern **SQLite** rpmdb only; the legacy Berkeley DB
 `var/lib/rpm/Packages` (RHEL 7/8, CentOS 7) has no stdlib parser and is skipped
 silently (no finding, no crash). RPM versions are matched as full EVR strings
