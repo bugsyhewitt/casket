@@ -120,6 +120,147 @@ class OSVClient:
         self._save_cache()
         return vulns
 
+    def query_batch(
+        self, jobs: list[tuple[list[str], str, str]]
+    ) -> list[list[dict[str, Any]]]:
+        """Resolve many packages in as few network round-trips as possible.
+
+        Each *job* is ``(candidate_ecosystems, package, version)`` — the same
+        ordered-candidate shape ``query_ecosystems`` takes (most specific
+        ecosystem first; e.g. ``["Alpine:v3.18", "Alpine"]``). The result is a
+        list aligned to ``jobs``: ``result[i]`` is the vuln list for ``jobs[i]``.
+
+        The win over calling ``query`` / ``query_ecosystems`` in a loop is the
+        network shape. A busy ``debian``/``ubuntu`` image carries hundreds of
+        packages; the per-package path is one HTTP round-trip *each*. OSV.dev's
+        ``/v1/querybatch`` endpoint resolves the whole list in **one** request,
+        returning vuln stubs (``{id, modified}``) per query. We then hydrate the
+        (typically small) set of vulnerable packages to full records — which
+        carry the severity casket scores — via ``/v1/vulns/{id}``, caching each
+        full record so a later run / repeat id is free. On a clean image (most
+        packages have zero vulns) this collapses hundreds of round-trips to one.
+
+        The cache-first contract is preserved exactly:
+
+          * Every candidate is checked against the disk cache and bundled seed
+            DB first, in order — a fully cached/seeded image touches no network.
+          * The batch request only carries the candidates that missed locally.
+          * Offline (or a network failure) degrades a *miss* to an empty list,
+            never a crash, and is not cached (so a later online run can retry).
+          * Resolved batch results are cached per ``(ecosystem, package,
+            version)`` tuple under the same key scheme ``query`` uses, so the
+            two paths share one warm cache.
+
+        ``query_batch([(ecos, pkg, ver)])`` is equivalent to
+        ``[query_ecosystems(ecos, pkg, ver)]`` but issues one batched request
+        for all local misses instead of one request per package.
+        """
+        results: list[list[dict[str, Any]]] = [[] for _ in jobs]
+
+        # First pass: serve everything resolvable from cache/seed, in candidate
+        # order. Record the misses we still need to resolve over the network,
+        # deduplicated by (ecosystem, package, version) so identical tuples are
+        # queried once and share the result.
+        pending: list[tuple[int, str]] = []  # (job index, ecosystem to try)
+        miss_keys: dict[str, tuple[str, str, str]] = {}
+        for i, (ecosystems, package, version) in enumerate(jobs):
+            resolved = False
+            seen: set[str] = set()
+            first_miss: str | None = None
+            for ecosystem in ecosystems:
+                if not ecosystem or ecosystem in seen:
+                    continue
+                seen.add(ecosystem)
+                key = self._key(ecosystem, package, version)
+                if key in self._cache:
+                    results[i] = self._cache[key]
+                    resolved = True
+                    break
+                if key in self._seed:
+                    results[i] = self._seed[key]
+                    resolved = True
+                    break
+                if first_miss is None:
+                    first_miss = ecosystem
+                    miss_keys[key] = (ecosystem, package, version)
+            if not resolved and first_miss is not None and not self.offline:
+                pending.append((i, first_miss))
+
+        if not pending:
+            return results
+
+        # Single batched existence query for all local misses.
+        ordered_keys = list(miss_keys.keys())
+        queries = [
+            {
+                "version": version,
+                "package": {"name": package, "ecosystem": ecosystem},
+            }
+            for ecosystem, package, version in (miss_keys[k] for k in ordered_keys)
+        ]
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/v1/querybatch",
+                json={"queries": queries},
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            batch_results = resp.json().get("results", [])
+        except (httpx.HTTPError, ValueError):
+            # Whole batch failed: leave misses as empty (uncached), so a later
+            # online run retries. Cached/seeded hits already populated results.
+            return results
+
+        # Hydrate full records for the vulnerable tuples, caching per tuple.
+        # Each distinct vuln id is fetched once and shared across tuples.
+        vuln_cache: dict[str, dict[str, Any] | None] = {}
+        any_cached = False
+        for key, entry in zip(ordered_keys, batch_results):
+            if not isinstance(entry, dict):
+                continue
+            stubs = entry.get("vulns") or []
+            full: list[dict[str, Any]] = []
+            for stub in stubs:
+                vid = stub.get("id") if isinstance(stub, dict) else None
+                if not vid:
+                    continue
+                if vid not in vuln_cache:
+                    vuln_cache[vid] = self._fetch_vuln(vid)
+                record = vuln_cache[vid]
+                full.append(record if record is not None else stub)
+            self._cache[key] = full
+            any_cached = True
+
+        if any_cached:
+            self._save_cache()
+
+        # Backfill results for the jobs whose first miss we batched.
+        for i, ecosystem in pending:
+            _, package, version = jobs[i][0], jobs[i][1], jobs[i][2]
+            key = self._key(ecosystem, package, version)
+            if key in self._cache:
+                results[i] = self._cache[key]
+        return results
+
+    def _fetch_vuln(self, vuln_id: str) -> dict[str, Any] | None:
+        """Fetch a full OSV record by id, or ``None`` on any failure.
+
+        ``/v1/querybatch`` returns only ``{id, modified}`` stubs; the full
+        record (with the ``severity`` array casket scores) lives at
+        ``/v1/vulns/{id}``. A failure degrades to ``None`` and the caller keeps
+        the stub, so a finding is never lost — only its severity may default.
+        """
+        try:
+            resp = httpx.get(
+                f"{self.base_url}/v1/vulns/{vuln_id}",
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
     def query_ecosystems(
         self, ecosystems: list[str], package: str, version: str
     ) -> list[dict[str, Any]]:

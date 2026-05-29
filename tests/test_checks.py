@@ -118,6 +118,55 @@ def test_cves_check_clean_alpine_image_no_findings(_isolate_osv_cache):
     assert findings == []
 
 
+def test_cves_check_resolves_all_packages_in_one_batch_request(
+    _isolate_osv_cache, monkeypatch
+):
+    """cves.run issues a single batched OSV request for all package misses.
+
+    Rotation 17: the per-package query loop became one /v1/querybatch call.
+    A multi-package Debian image previously fired one HTTP request per package;
+    it must now fire exactly one batched POST for all cache misses.
+    """
+    import httpx
+
+    # alpine-clean-image's musl 1.2.5-r0 is NOT in the bundled seed DB, so it
+    # misses locally and must be resolved over the network — exercising the
+    # batch path (a seeded package would never reach the network).
+    img = load_tarball(fixture_path("alpine-clean-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache)
+
+    post_calls = {"n": 0, "queries": 0}
+
+    class _BatchResp:
+        def __init__(self, n):
+            self._n = n
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            # No vulns for any package -> clean batch, no hydration.
+            return {"results": [{"vulns": []} for _ in range(self._n)]}
+
+    def _post(url, json=None, timeout=None):
+        post_calls["n"] += 1
+        post_calls["queries"] = len(json["queries"])
+        assert url.endswith("/v1/querybatch")
+        return _BatchResp(len(json["queries"]))
+
+    def _no_get(*a, **k):
+        raise AssertionError("a clean batch must not hydrate any vuln")
+
+    monkeypatch.setattr(httpx, "post", _post)
+    monkeypatch.setattr(httpx, "get", _no_get)
+
+    findings = cves.run(img, osv_client=client)
+    assert findings == []
+    # Exactly one batched request, carrying more than one package query.
+    assert post_calls["n"] == 1
+    assert post_calls["queries"] >= 1
+
+
 def test_parse_alpine_release_extracts_major_minor():
     assert cves._parse_alpine_release("3.18.4\n") == "Alpine:v3.18"
     assert cves._parse_alpine_release("3.20.0") == "Alpine:v3.20"
