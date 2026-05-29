@@ -448,44 +448,52 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
     # "Debian" fallback (seed DB / cache). None when no release marker exists.
     debian_ecosystem = _detect_debian_ecosystem(image)
 
+    # Collect every package across every layer first, then resolve them all in
+    # a single batched OSV query (one HTTP round-trip for all local cache misses
+    # instead of one per package — a large win on busy Debian/Ubuntu images).
+    # Each job carries its ordered ecosystem candidates: the release-qualified
+    # name first (what the live API needs) with the bare ecosystem as a fallback
+    # (under which the seed DB / warm cache are keyed). query_batch dedupes and
+    # skips falsy candidates, exactly like query_ecosystems.
+    packages: list[Package] = []
     for layer in image.layers:
-        for pkg in _extract_packages(layer):
-            if pkg.ecosystem == "Alpine":
-                # Release-qualified first (live API), bare "Alpine" fallback
-                # (seed DB / cache). query_ecosystems dedupes and skips falsy.
-                vulns = client.query_ecosystems(
-                    [alpine_ecosystem, "Alpine"], pkg.name, pkg.version
+        packages.extend(_extract_packages(layer))
+
+    jobs: list[tuple[list[str], str, str]] = []
+    for pkg in packages:
+        if pkg.ecosystem == "Alpine":
+            candidates = [alpine_ecosystem, "Alpine"]
+        elif pkg.ecosystem == "Debian":
+            candidates = [debian_ecosystem, "Debian"]
+        else:
+            candidates = [pkg.ecosystem]
+        jobs.append((candidates, pkg.name, pkg.version))
+
+    vuln_lists = client.query_batch(jobs)
+
+    for pkg, vulns in zip(packages, vuln_lists):
+        for vuln in vulns:
+            cve_id = vuln.get("id", "UNKNOWN")
+            aliases = vuln.get("aliases", [])
+            # Prefer a CVE-style alias as the headline id when present.
+            cve = next((a for a in aliases if a.startswith("CVE-")), cve_id)
+            findings.append(
+                Finding(
+                    category="cve",
+                    title=f"{pkg.name} {pkg.version}: {cve}",
+                    severity=_severity_from_osv(vuln),
+                    layer_sha=pkg.layer_sha,
+                    path_in_layer=pkg.path_in_layer,
+                    detail={
+                        "cve_id": cve,
+                        "osv_id": cve_id,
+                        "package": pkg.name,
+                        "ecosystem": pkg.ecosystem,
+                        "installed_version": pkg.version,
+                        "summary": vuln.get("summary", ""),
+                    },
                 )
-            elif pkg.ecosystem == "Debian":
-                # Release-qualified first (live API), bare "Debian" fallback
-                # (seed DB / cache). query_ecosystems dedupes and skips falsy.
-                vulns = client.query_ecosystems(
-                    [debian_ecosystem, "Debian"], pkg.name, pkg.version
-                )
-            else:
-                vulns = client.query(pkg.ecosystem, pkg.name, pkg.version)
-            for vuln in vulns:
-                cve_id = vuln.get("id", "UNKNOWN")
-                aliases = vuln.get("aliases", [])
-                # Prefer a CVE-style alias as the headline id when present.
-                cve = next((a for a in aliases if a.startswith("CVE-")), cve_id)
-                findings.append(
-                    Finding(
-                        category="cve",
-                        title=f"{pkg.name} {pkg.version}: {cve}",
-                        severity=_severity_from_osv(vuln),
-                        layer_sha=pkg.layer_sha,
-                        path_in_layer=pkg.path_in_layer,
-                        detail={
-                            "cve_id": cve,
-                            "osv_id": cve_id,
-                            "package": pkg.name,
-                            "ecosystem": pkg.ecosystem,
-                            "installed_version": pkg.version,
-                            "summary": vuln.get("summary", ""),
-                        },
-                    )
-                )
+            )
     return findings
 
 

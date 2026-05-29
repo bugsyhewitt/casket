@@ -619,6 +619,64 @@ the exact point three shipped features (`--fail-on`, SARIF `security-severity`,
 `--min-severity`) consume. It closes the last unscored CVSS family. High value,
 zero new dependencies, no scope creep, no architecture change.
 
+### Item 15 — Batched OSV queries (`/v1/querybatch`)
+
+**Priority: HIGH. ✅ IMPLEMENTED (Phase 2, Rotation 17).**
+
+**The gap.** Rotations 9–16 completed the *severity-accuracy* arc (the
+`--fail-on` gate, SARIF `security-severity`, `--min-severity`, and the full
+v2/v3/v4 CVSS scoring arc). But the CVE check's *network shape* was untouched
+since v0.1: `cves.run()` resolved each installed package with its own
+`client.query()` / `client.query_ecosystems()` call, i.e. **one HTTP request
+per package**. A real `debian`/`ubuntu` image carries hundreds of OS packages,
+so a first (cold-cache) scan fired hundreds of sequential OSV.dev round-trips —
+slow, and exactly the API-hammering pattern the cache layer was built to avoid.
+OSV.dev publishes `/v1/querybatch` precisely to resolve many `(ecosystem,
+package, version)` tuples in one request, and casket wasn't using it.
+
+**What shipped.** A new `OSVClient.query_batch(jobs)` resolves a whole list of
+packages in as few round-trips as possible, and `cves.run()` now collects every
+package across every layer first and resolves them in a single `query_batch`
+call. The method preserves the cache-first contract exactly:
+
+- Each job is `(candidate_ecosystems, package, version)` — the same ordered
+  candidate shape `query_ecosystems` takes (release-qualified first, bare
+  fallback). Every candidate is checked against the disk cache and bundled seed
+  DB first, in order, so a fully cached / seeded / `--offline` scan touches no
+  network at all.
+- Only the candidates that miss locally are sent — **all together** — to
+  `/v1/querybatch` in one POST. `querybatch` returns only `{id, modified}`
+  stubs, so the (typically small) set of *vulnerable* packages is then hydrated
+  to full records — which carry the `severity` array casket scores — via
+  `/v1/vulns/{id}`, each distinct id fetched once and cached per package tuple
+  under the same key scheme `query()` uses (both paths share one warm cache).
+- On a clean image (most packages have zero vulns) hundreds of round-trips
+  collapse to a single batched request with no hydration.
+- A whole-batch network failure, or `--offline`, degrades misses to empty
+  lists (never a crash) and leaves them uncached so a later online run retries;
+  a per-id hydration failure keeps the stub so a finding is never lost (only its
+  severity may default). Duplicate tuples are deduped into one query;
+  falsy/`None` candidates are skipped, mirroring `query_ecosystems`.
+
+Zero new dependencies (httpx already present), no architecture change — the
+public severity / output surfaces are byte-identical; only the network shape
+changed. Covered by 11 new tests: 10 in `tests/test_osv_cache.py` (cache/seed
+served without network, single batched request for all misses, per-tuple
+caching of hydrated records, offline + network-failure degradation,
+release-qualified vs. bare candidate selection, dedupe-to-one-query, stub kept
+on hydration failure, empty-jobs no-op) plus 1 E2E in `tests/test_checks.py`
+proving `cves.run()` issues exactly one batched POST for an image's package
+misses. `query()` and `query_ecosystems()` are retained unchanged (still used /
+tested directly), so nothing regressed.
+
+**Why this was the pick.** The severity-accuracy arc is closed; the obvious next
+self-contained, high-value gap is the CVE check's network efficiency — the one
+place casket still scaled linearly in HTTP requests with package count. It's a
+direct fit for the cache-first architecture (the batch is just "resolve the
+local misses, but in one request"), zero new dependencies, no scope creep, no
+architecture change, and it makes cold-cache scans of busy images dramatically
+faster while staying just as polite to OSV.dev.
+
 ### Candidate next items (not yet done)
 
 - **Alpine `edge` handling** — `etc/alpine-release` on edge images is non-numeric;

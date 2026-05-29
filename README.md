@@ -325,6 +325,20 @@ Results are cached to `~/.cache/casket/osv-cache.json` (override with
 `CASKET_OSV_CACHE`). A bundled read-only seed DB resolves a small curated set
 with no network at all. Pass `--offline` to forbid network access entirely.
 
+### Batched OSV queries
+
+A busy `debian`/`ubuntu` image can carry hundreds of installed packages. Rather
+than issue one HTTP request per package, `casket` resolves them **cache-first,
+then in a single batched request**: every package is checked against the
+on-disk cache and bundled seed DB first (a fully cached or offline scan touches
+no network), and only the packages that miss locally are sent — all together —
+to OSV.dev's `/v1/querybatch` endpoint. The (typically small) set of vulnerable
+packages is then hydrated to full records for severity scoring and cached
+per package, so on a clean image hundreds of round-trips collapse to one. The
+behaviour is otherwise unchanged: misses degrade to empty (never a crash, and
+they stay uncached so a later online run can retry), and the release-qualified
+ecosystem candidates above are tried in the same order.
+
 ## Development
 
 ```bash
