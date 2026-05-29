@@ -64,6 +64,7 @@ casket --image REF
        [--fail-on {any,critical,high,medium,low,info,none}]
        [--min-severity {all,critical,high,medium,low,info}]
        [--min-epss PROBABILITY]
+       [--vex VEX.json]
        [--compare BASELINE.json]
        [--offline]
        [--token TOKEN]
@@ -199,6 +200,55 @@ image's CVEs resolve in **one** batched request, and every result is cached to
 with no cached score simply carry no EPSS field (and are pruned by an explicit
 `--min-epss`). A network failure degrades the same way — never a crash, and the
 miss is left uncached so a later online run retries.
+
+### Suppressing triaged CVEs with VEX and `--vex`
+
+`--min-severity` and `--min-epss` cut noise *heuristically*. VEX lets you cut it
+*deliberately*: an [OpenVEX](https://openvex.dev) document records the CVEs a
+human has already triaged as **not exploitable in this image** — the vulnerable
+code path is never reached, the affected component isn't shipped, or a
+backported patch fixed it without bumping the version string. Every mature
+scanner consumes VEX for exactly this (Trivy/Grype VEX, GitHub dismissals);
+casket reads an OpenVEX JSON file and drops the matching CVE findings.
+
+```bash
+# suppress the CVEs your VEX document marks not_affected / fixed
+casket --image ./myapp.tar --checks cves --vex ./vex.json
+
+# stacks with the other filters — triage, then prioritise
+casket --image ./myapp.tar --checks all --vex ./vex.json --min-epss 0.1
+```
+
+A minimal VEX document:
+
+```json
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "statements": [
+    { "vulnerability": { "name": "CVE-2018-18074" }, "status": "not_affected" },
+    { "vulnerability": "CVE-2021-0001", "status": "fixed" }
+  ]
+}
+```
+
+- Only `not_affected` and `fixed` statements suppress — they mean "do not report
+  this against this image". `affected` / `under_investigation` statements are
+  ignored (you're telling casket to *keep* showing those).
+- A statement's `vulnerability` may be the spec object `{"name": "CVE-…"}` or a
+  bare string (`"CVE-…"`); either works.
+- Matching is robust: a CVE finding is suppressed when **any** of its
+  identifiers — the headline CVE id, the raw OSV id, or any cross-reference
+  alias — is named by a suppressing statement. So a VEX entry written against a
+  `CVE-…` still suppresses a finding whose OSV headline is a `GHSA-…`, and
+  vice-versa.
+- VEX is a CVE-triage format: `creds` and `misconfig` findings are **never**
+  pruned by `--vex`.
+- Like the other filters, `--vex` shapes the **reported** set *before* the
+  `--fail-on` gate (and `--compare` diff) run, so a triaged-away CVE neither
+  shows up in the report nor secretly trips the build gate.
+- A missing or malformed VEX file is a clean exit `2` (with a one-line stderr
+  message), never a traceback. Individual malformed statements are skipped so a
+  single bad row doesn't void an otherwise-usable file.
 
 ### Diffing two scans with `--compare`
 

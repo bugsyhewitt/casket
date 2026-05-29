@@ -222,6 +222,63 @@ def filter_by_epss(
     return kept
 
 
+def _vex_identifiers(finding: Finding) -> list[str]:
+    """Every identifier a VEX statement could reference this CVE finding by.
+
+    A VEX document names a vulnerability by *some* id — the operator may have
+    written ``CVE-2018-18074`` while the OSV record's headline id is a GHSA, or
+    vice-versa. To match robustly we check the finding against its headline CVE
+    (``cve_id``), the raw OSV id (``osv_id``), **and** every cross-reference
+    alias (``aliases``). Any one of them appearing in the suppression set
+    suppresses the finding.
+    """
+    detail = finding.detail
+    ids: list[str] = []
+    for key in ("cve_id", "osv_id"):
+        value = detail.get(key)
+        if isinstance(value, str) and value:
+            ids.append(value)
+    aliases = detail.get("aliases")
+    if isinstance(aliases, list):
+        ids.extend(a for a in aliases if isinstance(a, str) and a)
+    return ids
+
+
+def filter_by_vex(
+    findings: list[Finding], suppressed: set[str] | None = None
+) -> list[Finding]:
+    """Drop CVE findings the operator's VEX document marked not-affected/fixed.
+
+    ``suppressed`` is the set of vulnerability identifiers produced by
+    ``casket.vex.parse_vex`` — vulns whose VEX status is ``not_affected`` or
+    ``fixed`` (i.e. "do not report this against this image"). A ``cve`` finding
+    is dropped iff *any* of its identifiers (headline CVE id, OSV id, or any
+    alias — see ``_vex_identifiers``) is in that set.
+
+      - ``None`` / empty set (no ``--vex`` flag, or a VEX file with no
+        suppressing statements): return every finding unchanged (no-op).
+      - otherwise: keep every **non-CVE** finding (VEX is a CVE-triage format;
+        creds/misconfig are out of its scope and always survive), and keep a
+        CVE finding only when none of its identifiers is suppressed.
+
+    Like the other report filters this shapes the *reported* set before the
+    exit-code gate / ``--compare`` diff runs, so what fails the build matches
+    what the operator sees — a vuln triaged away in VEX neither shows up nor
+    secretly trips the gate.
+    """
+    if not suppressed:
+        return list(findings)
+    kept: list[Finding] = []
+    for f in findings:
+        if f.category != "cve":
+            kept.append(f)
+            continue
+        if any(ident in suppressed for ident in _vex_identifiers(f)):
+            continue
+        kept.append(f)
+    return kept
+
+
 def exit_code(findings: list[Finding], fail_on: str = "any") -> int:
     """Compute the process exit code for a scan, gated by severity threshold.
 

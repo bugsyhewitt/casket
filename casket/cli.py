@@ -29,6 +29,7 @@ from casket.scanner import (
     exit_code,
     filter_by_epss,
     filter_by_severity,
+    filter_by_vex,
     load_image,
     resolve_checks,
     run_checks,
@@ -142,6 +143,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--vex",
+        metavar="VEX.json",
+        help=(
+            "suppress CVE findings an OpenVEX document marks not_affected or "
+            "fixed. Takes a VEX JSON file (https://openvex.dev); every CVE "
+            "finding whose id (CVE, OSV, or any alias) is named by a "
+            "suppressing statement is dropped from the report. creds/misconfig "
+            "findings are unaffected. Like --min-severity/--min-epss it shapes "
+            "the reported set before the gate/diff, so a triaged-away CVE "
+            "neither shows up nor trips the exit-code gate. Omitting the flag "
+            "reports every finding (default)."
+        ),
+    )
+    parser.add_argument(
         "--compare",
         metavar="BASELINE.json",
         help=(
@@ -224,6 +239,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"casket: failed to load image: {exc}", file=sys.stderr)
         return 2
 
+    # Parse the VEX document up front (before the scan) so a malformed file
+    # fails fast with a clean exit 2 rather than after a full image scan.
+    vex_suppressed: set[str] | None = None
+    if args.vex:
+        from casket.vex import VEXError, load_vex
+
+        try:
+            vex_suppressed = load_vex(args.vex)
+        except FileNotFoundError:
+            print(f"casket: VEX file not found: {args.vex}", file=sys.stderr)
+            return 2
+        except (VEXError, OSError) as exc:
+            print(f"casket: failed to read VEX file: {exc}", file=sys.stderr)
+            return 2
+
     findings = run_checks(
         image, selected, osv_client=osv_client, epss_client=epss_client
     )
@@ -240,6 +270,12 @@ def main(argv: list[str] | None = None) -> int:
     # so what fails the build matches what the operator sees. Absent (the
     # default), it is a no-op. creds/misconfig findings are never pruned by it.
     findings = filter_by_epss(findings, args.min_epss)
+    # --vex prunes CVE findings the operator's OpenVEX document triaged as
+    # not_affected / fixed. Like the severity / EPSS filters it shapes the
+    # *reported* set before the gate / diff, so a triaged-away CVE neither
+    # shows up nor secretly trips the gate. Absent (the default), it is a
+    # no-op; creds/misconfig findings are never pruned by it.
+    findings = filter_by_vex(findings, vex_suppressed)
 
     if args.compare:
         # Diff mode: compare this scan against a previous casket JSON report and
