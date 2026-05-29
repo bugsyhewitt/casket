@@ -248,8 +248,12 @@ over env vars. Credentials are never logged.
 - `--format json` — the canonical machine-readable report. Every finding carries
   `category`, `severity`, `layer_sha`, and `path_in_layer`, plus category-specific
   fields (`rule` for creds/misconfig; `cve_id`, `package`, `installed_version`
-  for CVEs). When the image config records build history, findings also carry
-  `layer_command` — the Dockerfile instruction that introduced the layer (see
+  for CVEs). CVE findings also carry the cross-reference identifiers and
+  remediation links the OSV record provides — `aliases`, `fix_urls`,
+  `advisory_urls`, `exploit_urls` (see
+  [CVE references & aliases](#cve-references--aliases)). When the image config
+  records build history, findings also carry `layer_command` — the Dockerfile
+  instruction that introduced the layer (see
   [Layer command attribution](#layer-command-attribution)).
 - `--format h1md` — a HackerOne-style markdown report for human submission.
 - `--format sarif` — [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/)
@@ -297,6 +301,48 @@ bullet in `h1md`, and a `properties.layer_command` entry in `sarif`. Findings
 derived from the image config rather than a layer (misconfig checks) carry no
 `layer_command`, since they belong to no single filesystem layer. If an image
 ships without history, findings simply omit the field — nothing else changes.
+
+## CVE references & aliases
+
+A CVE finding answers more than "which package has which CVE" — it also tells
+you **where to go next**. Every OSV record `casket` resolves already carries the
+upstream cross-references and remediation links, so `casket` surfaces them on
+the finding with **no extra network call** (the data rides along with the
+severity lookup `casket` already performs and caches):
+
+| field | source | what it gives you |
+|---|---|---|
+| `aliases` | OSV `aliases` | the full id list for the same vuln (CVE + GHSA + distro ids), de-duplicated |
+| `fix_urls` | OSV `references` type `FIX` | the patch / remediation commit(s) |
+| `advisory_urls` | OSV `references` types `ADVISORY`, `REPORT` | the advisory write-up(s) |
+| `exploit_urls` | OSV `references` types `EXPLOIT`, `EVIDENCE` | known proof-of-concept / exploit link(s) |
+
+Each field is a list, de-duplicated and in first-seen order. A field is **omitted
+entirely** when the OSV record carries nothing for it — so a finding with no
+known patch simply has no `fix_urls` key, rather than an empty one. The headline
+`cve_id` still prefers a `CVE-…` alias when present, falling back to the raw OSV
+id; `aliases` exposes the rest. All four fields flow through every output format:
+top-level keys in `json`, bullets in `h1md`, and `result.properties` entries in
+`sarif`.
+
+This is the GHSA / NVD reference enrichment value without an external API
+dependency or rate-limit/auth concerns — OSV's own `references` already aggregate
+the upstream advisory and patch links.
+
+```json
+{
+  "category": "cve",
+  "title": "requests 2.19.0: CVE-2018-18074",
+  "severity": "medium",
+  "cve_id": "CVE-2018-18074",
+  "osv_id": "GHSA-x84v-xcm2-53pg",
+  "package": "requests",
+  "installed_version": "2.19.0",
+  "aliases": ["CVE-2018-18074", "GHSA-x84v-xcm2-53pg"],
+  "fix_urls": ["https://github.com/psf/requests/commit/c45d…"],
+  "advisory_urls": ["https://github.com/advisories/GHSA-x84v-xcm2-53pg"]
+}
+```
 
 ## Credential coverage
 
