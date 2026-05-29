@@ -505,6 +505,15 @@ def _cvss_score_to_severity(score: float) -> str:
     return "info"
 
 
+# CVSS v2.0 base-score metric weights (FIRST CVSS v2.0 spec, section 3.2.1).
+# Access Vector / Access Complexity / Authentication and the shared
+# Confidentiality/Integrity/Availability impact scale.
+_CVSS2_AV = {"L": 0.395, "A": 0.646, "N": 1.0}
+_CVSS2_AC = {"H": 0.35, "M": 0.61, "L": 0.71}
+_CVSS2_AU = {"M": 0.45, "S": 0.56, "N": 0.704}
+_CVSS2_CIA = {"N": 0.0, "P": 0.275, "C": 0.660}
+
+
 # CVSS v3.x base-score metric weights (CVSS v3.1 specification, section 7.1).
 _CVSS3_AV = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}
 _CVSS3_AC = {"L": 0.77, "H": 0.44}
@@ -563,19 +572,104 @@ def _cvss3_base_score(vector: str) -> float | None:
     return _roundup(min(impact + exploitability, 10.0))
 
 
+def _cvss_vector_metrics(vector: str) -> dict[str, str]:
+    """Split a ``KEY:VAL/KEY:VAL`` CVSS vector into an upper-cased metric map.
+
+    Tolerates an optional leading version token (``CVSS:3.1`` / ``CVSS:4.0``)
+    and stray whitespace. Legacy CVSS v2 vectors carry no version prefix.
+    """
+    metrics: dict[str, str] = {}
+    for part in vector.split("/"):
+        if ":" not in part:
+            continue
+        key, _, val = part.partition(":")
+        metrics[key.strip().upper()] = val.strip().upper()
+    return metrics
+
+
+def _cvss2_base_score(vector: str) -> float | None:
+    """Compute a CVSS v2.0 base score from a vector string.
+
+    Legacy CVSS v2 vectors (e.g. ``AV:N/AC:L/Au:N/C:P/I:P/A:P``) carry no
+    ``CVSS:`` version prefix and use the v2 metric set (Access Vector / Access
+    Complexity / Authentication + CIA impact on the partial/complete scale).
+    The closed-form base-score formula is from the FIRST CVSS v2.0 spec
+    (section 3.2.1)::
+
+        Impact         = 10.41 * (1 - (1-C)*(1-I)*(1-A))
+        Exploitability = 20 * AV * AC * Au
+        f(Impact)      = 0 if Impact == 0 else 1.176
+        BaseScore      = round1(((0.6*Impact)+(0.4*Exploitability)-1.5) * f(Impact))
+
+    Returns ``None`` if a required metric is missing or malformed, so the
+    caller falls back to other severity sources rather than guessing.
+    """
+    metrics = _cvss_vector_metrics(vector)
+    try:
+        av = _CVSS2_AV[metrics["AV"]]
+        ac = _CVSS2_AC[metrics["AC"]]
+        au = _CVSS2_AU[metrics["AU"]]
+        conf = _CVSS2_CIA[metrics["C"]]
+        integ = _CVSS2_CIA[metrics["I"]]
+        avail = _CVSS2_CIA[metrics["A"]]
+    except KeyError:
+        return None
+
+    impact = 10.41 * (1.0 - (1.0 - conf) * (1.0 - integ) * (1.0 - avail))
+    exploitability = 20.0 * av * ac * au
+    f_impact = 0.0 if impact == 0 else 1.176
+    base = ((0.6 * impact) + (0.4 * exploitability) - 1.5) * f_impact
+    # CVSS v2 rounds the base score to one decimal place.
+    return round(max(base, 0.0), 1)
+
+
 def _severity_from_cvss_vector(vector: str) -> str | None:
     """Derive a qualitative severity from a CVSS vector string, or ``None``.
 
-    Handles CVSS v3.x vectors (computing the base score). For other versions
-    (v2, v4) we return ``None`` here; numeric scores in the OSV ``severity``
-    array are not provided as raw floats, so v3 vectors are the common case and
-    the safe one to score with a small stdlib calculator.
+    Handles CVSS v3.x and legacy CVSS v2 vectors by computing the base score
+    with a small stdlib calculator and mapping it through casket's unified
+    qualitative band (``_cvss_score_to_severity``). Version is identified by the
+    ``CVSS:3`` / ``CVSS:4`` prefix; a bare (prefix-less) vector that carries the
+    v2-only ``Au`` metric is scored as v2, otherwise as v3. CVSS v4.0 vectors
+    (``CVSS:4.0/…``) use a lookup-table scoring model we don't reproduce here
+    and return ``None`` (caller falls back to ``database_specific.severity``).
+
+    [Worker decision: unified severity band — Rotation 14, POST_V01 v2 scoring]
+    CVSS v2's *native* qualitative scale has no "critical" tier (v2 tops out at
+    "High" for 7.0–10.0). We deliberately map v2 base scores through the same
+    v3.1 band function (≥9.0 critical) the rest of casket uses, so every finding
+    — v2- or v3-sourced — speaks one severity vocabulary. The --fail-on gate and
+    SARIF security-severity float both consume that single vocabulary; emitting
+    a v2-only scale here would split it. The numeric score is faithful to the v2
+    spec; only the qualitative label is unified.
     """
     v = vector.strip()
-    if v.upper().startswith("CVSS:3"):
+    upper = v.upper()
+    if upper.startswith("CVSS:4"):
+        # v4.0 base scoring is table-driven, not a closed-form formula; we
+        # don't reproduce it. Fall through to other severity sources.
+        return None
+    if upper.startswith("CVSS:3"):
         score = _cvss3_base_score(v)
         if score is not None:
             return _cvss_score_to_severity(score)
+        return None
+    if upper.startswith("CVSS:2"):
+        score = _cvss2_base_score(v)
+        if score is not None:
+            return _cvss_score_to_severity(score)
+        return None
+    # Prefix-less vector: the v2-only ``Au`` metric disambiguates it as v2,
+    # otherwise treat a bare vector as v3 (the original behaviour).
+    metrics = _cvss_vector_metrics(v)
+    if "AU" in metrics:
+        score = _cvss2_base_score(v)
+        if score is not None:
+            return _cvss_score_to_severity(score)
+        return None
+    score = _cvss3_base_score(v)
+    if score is not None:
+        return _cvss_score_to_severity(score)
     return None
 
 
@@ -585,12 +679,14 @@ def _severity_from_osv(vuln: dict) -> str:
     Resolution order, most authoritative first:
 
     1. The standard OSV ``severity`` array — a list of
-       ``{"type": "CVSS_V3"|..., "score": "<vector>"}`` entries. This is where
-       OSV.dev actually records CVSS for the overwhelming majority of records;
-       we parse the CVSS v3.x vector and map its base score to a band. (The
-       previous implementation ignored this field entirely, so almost every
-       live finding silently defaulted to "high" — degrading the --fail-on
-       gate and SARIF security-severity sort.)
+       ``{"type": "CVSS_V3"|"CVSS_V2"|..., "score": "<vector>"}`` entries. This
+       is where OSV.dev actually records CVSS for the overwhelming majority of
+       records; we parse CVSS v3.x *and* legacy v2 vectors and map the base
+       score to a band. (The original implementation ignored this field
+       entirely, so almost every live finding silently defaulted to "high";
+       Rotation 13 added v3 scoring, Rotation 14 added v2 — older CVEs on the
+       aged packages a container scanner finds are frequently v2-only.) CVSS
+       v4.0 vectors are not yet scored and fall through to source 2.
     2. The non-standard ``database_specific.severity`` string (some ecosystems
        — notably GHSA-sourced records — set this), accepted verbatim.
     3. A conservative ``"high"`` default when neither is usable.

@@ -476,15 +476,57 @@ rendering) consume — and they were all built on a value that was wrong for liv
 findings. High value, low complexity, zero new dependencies, no scope creep, no
 architecture change.
 
+### Item 12 — CVSS v2 vector scoring
+
+**Priority: HIGH. ✅ IMPLEMENTED (Phase 2, Rotation 14).**
+
+**The gap.** Rotation 13 (Item 11) scored only CVSS **v3.x** vectors from the
+standard OSV `severity` array. Legacy CVSS **v2** vectors (no `CVSS:` prefix,
+e.g. `AV:N/AC:L/Au:N/C:P/I:P/A:P`) fell through to
+`database_specific.severity` and, failing that, the conservative `"high"`
+default. But v2 vectors are common precisely on the *old packages* a container
+scanner routinely finds — exactly the population whose severity accuracy drives
+the `--fail-on` gate and the SARIF `security-severity` sort. So a large slice of
+real findings still defaulted to `"high"`.
+
+**What shipped.** `casket/checks/cves.py` now scores CVSS v2 vectors. A small
+stdlib closed-form calculator (`_cvss2_base_score`, faithful to the FIRST CVSS
+v2.0 spec §3.2.1 — Impact, Exploitability, the `f(Impact)` factor, and 1-decimal
+rounding; validated against published reference vectors 7.5 / 10.0 / 4.3 / 5.0
+/ 0.0) computes the base score. `_severity_from_cvss_vector` now dispatches by
+version: `CVSS:3` → v3, `CVSS:2` → v2, a prefix-less vector with the v2-only
+`Au` metric → v2 (otherwise v3), and `CVSS:4.0/…` → `None` (v4's table-driven
+base score is deliberately not reproduced; it falls through to
+`database_specific.severity`). v2 scores map through the *same* unified
+`_cvss_score_to_severity` band the rest of casket uses, so every finding speaks
+one severity vocabulary including `critical` (which v2's native scale lacks) —
+the score is v2-faithful, only the qualitative label is unified. Resolution
+order in `_severity_from_osv` is unchanged: (1) standard CVSS array (now v2+v3),
+(2) `database_specific.severity`, (3) `"high"`. Zero new dependencies. Covered
+by 10 new tests in `tests/test_checks.py` (v2 reference-vector scores, version
+prefix, zero-impact, missing-metric/garbage → None, prefix-less `Au`
+disambiguation, v4-unscored, array-beats-`database_specific` for v2, and an E2E
+proving a finding's severity derives from a seeded v2 5.0 vector → `medium`
+rather than the old default). The pre-existing
+`test_severity_from_osv_falls_back_to_database_specific_for_non_v3_vector` was
+retargeted to a CVSS v4 vector (the genuinely-unscored case now that v2 scores).
+
+**Why this was the pick.** Same correctness-fix rationale as Rotation 13, one
+version older: it tightens severity accuracy at the exact point three shipped
+features (`--fail-on`, SARIF `security-severity`, severity rendering) consume,
+for a vector family (v2) that dominates older CVEs. High value, low complexity,
+zero new dependencies, no scope creep, no architecture change.
+
 ### Candidate next items (not yet done)
 
 - **Alpine `edge` handling** — `etc/alpine-release` on edge images is non-numeric;
   OSV has no `Alpine:edge`. Currently falls back to bare `Alpine` (fine, but
   could log a note).
-- **CVSS v4 / v2 vector scoring** — Rotation 13 scores v3.x vectors only;
-  v4 (`CVSS:4.0/…`) and legacy v2 vectors fall through to
-  `database_specific.severity`. Adding a v4 calculator would tighten coverage
-  for the newest records.
+- **CVSS v4 vector scoring** — Rotation 13/14 score v3.x and v2 vectors;
+  v4 (`CVSS:4.0/…`) still falls through to `database_specific.severity`. v4's
+  base score is table-driven (a ~270-entry MacroVector lookup with
+  interpolation), not a closed-form formula, so a faithful stdlib
+  implementation is a larger, standalone change.
 
 ---
 
