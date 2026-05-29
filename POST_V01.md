@@ -677,8 +677,87 @@ local misses, but in one request"), zero new dependencies, no scope creep, no
 architecture change, and it makes cold-cache scans of busy images dramatically
 faster while staying just as polite to OSV.dev.
 
+### Item 16 — `--compare` scan diff mode
+
+**Priority: HIGH. ✅ IMPLEMENTED (Phase 2, Rotation 18).**
+
+**The gap.** Rotations 9–16 made severities *accurate* and Rotation 15
+(`--min-severity`) made the report *prunable*, but every output mode still
+answered only one question: "what findings does this image have *right now*?"
+A container image is rebuilt constantly, and the question that actually drives
+CI is the *delta*: "did **this** build introduce anything new versus the last
+known-good scan?" On a busy base image the absolute finding set is a large,
+slow-moving wall of OS-package CVEs — an operator staring at it cannot tell a
+genuine regression (a freshly-added dependency CVE, a newly-baked secret) from
+the inherited background noise. Every mature scanner ships a diff/baseline mode
+for exactly this (Trivy `--ignore-unfixed` + baseline files, Grype's
+fail-on-new patterns); casket had no way to compare two scans.
+
+**What shipped.** A new `casket/compare.py` module plus a `--compare
+BASELINE.json` CLI flag. The flag takes a previously saved casket `--format
+json` report as a baseline, runs the current scan, diffs the two, emits a diff
+document, and **exits `1` only when the current build adds new findings**
+(regressions) — `0` otherwise. The diff classifies every finding as `added`
+(regression), `removed` (fixed/gone), `changed` (same finding, severity moved —
+e.g. a CVE re-scored medium → critical), or `unchanged`, with a `summary` count
+block and the baseline/current image refs.
+
+The substance is *identity*: which current finding is "the same" as a baseline
+one. `finding_fingerprint()` keys on the finding's **semantics**, deliberately
+excluding volatile build artifacts — `layer_sha` (a rebuild yields fresh
+digests for byte-identical content, so keying on it would report every finding
+as added+removed on every rebuild), `summary`, and `layer_command`. Per
+category the key is the minimal issue-pinning set: `cve` →
+cve_id+osv_id+package+ecosystem+installed_version; `creds` → rule+path;
+`misconfig` → rule + salient value (port/user/env_var); a generic
+title/rule+path fallback. `severity` is excluded from *identity* but compared
+*separately*, so a re-scored CVE surfaces as `changed` (and is **not** counted
+as a regression — it was already present) rather than being lost to an
+added/removed pair. `--min-severity` is applied to the current scan *before*
+diffing (diff at a chosen severity floor); `--fail-on` is ignored in compare
+mode — the diff gates on new findings, the actionable CI signal. A
+missing/malformed/non-report baseline file degrades to a clean exit-2 error,
+never a traceback.
+
+`findings.report_dict()` was extracted so the current scan is diffed in-memory
+with no serialize/re-parse round-trip (the json renderer now calls it too).
+Zero new dependencies (stdlib `json`), no architecture change — `--compare` is a
+pure post-processing layer over the existing canonical JSON report. Covered by
+29 new tests in `tests/test_compare.py`: the fingerprint's ignore/distinguish
+rules (layer_sha / severity / summary / layer_command ignored; cve_id / version
+/ creds path / misconfig value distinguished; fallback safety), the
+`diff_reports` add/remove/change/unchanged matrix (including
+rebuilt-layer-digest stability, identical-report all-unchanged, empty-baseline /
+empty-current edges, a mixed add+remove+change+unchanged case, image-ref
+carry-through, and missing-`findings`-key tolerance), `regression_count`
+semantics (added counts, removed/changed do not), `load_baseline_report`
+validation, the CLI parser/help surface, and five E2E cases against the
+`rootuser-image` fixture (same-image clean exit 0, empty-baseline regression
+exit 1, `--min-severity` applied before diff, missing-file and malformed-file
+exit-2 paths).
+
+**Why this was the pick.** The severity-accuracy arc (9–16) and the report-noise
+fix (15) are closed, and Rotation 17 closed the CVE network-efficiency gap. The
+obvious next self-contained, high-value capability is the *temporal* dimension
+casket entirely lacked: comparing scans over time. It's the standard CI gate
+for a scanner, a direct fit for the existing canonical JSON report (the diff is
+pure post-processing), zero new dependencies, no network (unlike the GHSA / NVD
+/ EPSS enrichment candidates, which all add an external API dependency and
+rate-limit/auth concerns), no scope creep, and no architecture change. It also
+*reuses* the severity-accuracy work — a re-scored CVE showing up as `changed` is
+only meaningful because the scores are now correct.
+
 ### Candidate next items (not yet done)
 
+- **GHSA / NVD reference enrichment** — cross-link CVE findings to GHSA
+  identifiers (GitHub Advisory DB) or surface NVD `references` (exploit / patch
+  URLs). Both add an external network dependency and rate-limit/auth concerns,
+  so each is its own rotation; the OSV record already carries `aliases`
+  (a CVE is already preferred as the headline id over the raw OSV id).
+- **EPSS score / time-series** — fetch FIRST's EPSS exploit-probability score
+  per CVE (one batched API call) and, longer-term, track it across runs to flag
+  fast-rising threats. `--compare` (Item 16) now provides the run-to-run diff
+  substrate an EPSS trend could build on.
 - **Alpine `edge` handling** — `etc/alpine-release` on edge images is non-numeric;
   OSV has no `Alpine:edge`. Currently falls back to bare `Alpine` (fine, but
   could log a note).

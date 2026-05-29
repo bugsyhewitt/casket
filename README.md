@@ -61,6 +61,7 @@ casket --image REF
        --format {json,h1md,sarif}
        [--fail-on {any,critical,high,medium,low,info,none}]
        [--min-severity {all,critical,high,medium,low,info}]
+       [--compare BASELINE.json]
        [--offline]
        [--token TOKEN]
        [--registry-user USER] [--registry-password PASS]
@@ -134,6 +135,63 @@ a focused gate — e.g. report high+ and fail only on critical:
 ```bash
 casket --image ./myapp.tar --checks all --min-severity high --fail-on critical
 ```
+
+### Diffing two scans with `--compare`
+
+A container image is rebuilt constantly. The CI question is rarely "what
+findings does this image have?" (often a large, slow-moving wall of OS-package
+CVEs) but **"did *this* build introduce anything new versus the last
+known-good scan?"** `--compare` answers exactly that: it takes a previously
+saved casket JSON report as a baseline, diffs the current scan against it, and
+emits a diff document — and it exits `1` **only when this build adds new
+findings** (regressions), `0` otherwise.
+
+```bash
+# 1. record a baseline from a known-good image (e.g. the last release)
+casket --image ./myapp:released.tar --checks all --format json > baseline.json
+
+# 2. on every build, diff the new image against that baseline
+casket --image ./myapp:candidate.tar --checks all --compare baseline.json
+#   exit 0: no new findings  |  exit 1: this build introduced something new
+```
+
+The diff classifies every finding into four buckets:
+
+| bucket | meaning | gates the build? |
+|---|---|---|
+| `added` | present now, absent in the baseline — a **regression** | **yes** (exit 1) |
+| `removed` | in the baseline, gone now — fixed | no |
+| `changed` | same finding, but its **severity moved** (e.g. a CVE re-scored medium → critical) | no |
+| `unchanged` | identical in both scans | no |
+
+Finding identity is matched on the issue's **semantics**, not on volatile build
+artifacts: `layer_sha` (a rebuild produces fresh digests for identical content),
+`summary`, and `layer_command` are all ignored, so a plain rebuild reports
+everything as `unchanged` rather than added+removed. `severity` is excluded from
+identity but compared separately, which is what surfaces re-scored CVEs as
+`changed` instead of losing them to an added/removed pair.
+
+```jsonc
+{
+  "tool": "casket",
+  "diff": true,
+  "baseline_image": "./myapp:released.tar",
+  "current_image": "./myapp:candidate.tar",
+  "summary": { "added": 1, "removed": 0, "changed": 1, "unchanged": 42 },
+  "added":     [ /* full current findings that are new */ ],
+  "removed":   [ /* full baseline findings now gone */ ],
+  "changed":   [ { "from_severity": "medium", "to_severity": "critical",
+                   "finding": { /* current finding */ } } ],
+  "unchanged": [ /* … */ ]
+}
+```
+
+`--min-severity` is applied to the current scan **before** diffing, so you can
+diff at a chosen severity floor (e.g. `--min-severity high --compare baseline.json`
+only ever considers high+ findings on both sides). `--fail-on` is ignored in
+compare mode — the diff gates on *new* findings instead, which is the
+actionable CI signal. The baseline must be a casket `--format json` report; any
+other file produces a clean exit-2 error rather than a traceback.
 
 ### tarball mode (no dependencies)
 

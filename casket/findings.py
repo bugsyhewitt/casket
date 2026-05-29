@@ -93,14 +93,24 @@ def render(findings: list[Finding], fmt: str, *, image: str) -> str:
     raise ValueError(f"unknown format: {fmt!r}")
 
 
-def _render_json(findings: list[Finding], *, image: str) -> str:
-    payload = {
+def report_dict(findings: list[Finding], *, image: str) -> dict[str, Any]:
+    """Build the canonical casket JSON report object (sorted by severity).
+
+    This is the in-memory form of the ``--format json`` output; ``_render_json``
+    serializes it, and ``--compare`` consumes it directly without a serialize /
+    re-parse round-trip.
+    """
+    ordered = sorted(findings, key=_severity_key)
+    return {
         "tool": "casket",
         "image": image,
-        "finding_count": len(findings),
-        "findings": [f.to_dict() for f in findings],
+        "finding_count": len(ordered),
+        "findings": [f.to_dict() for f in ordered],
     }
-    return json.dumps(payload, indent=2, sort_keys=False)
+
+
+def _render_json(findings: list[Finding], *, image: str) -> str:
+    return json.dumps(report_dict(findings, image=image), indent=2, sort_keys=False)
 
 
 def _render_h1md(findings: list[Finding], *, image: str) -> str:
