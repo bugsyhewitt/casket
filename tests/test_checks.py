@@ -600,10 +600,29 @@ def test_severity_from_cvss_vector_disambiguates_prefixless_v2_by_au():
     ) == "high"
 
 
-def test_severity_from_cvss_vector_v4_unscored():
-    """A CVSS v4.0 vector is not scored here and returns None."""
+def test_severity_from_cvss_vector_scores_v4():
+    """A CVSS v4.0 vector is now scored and maps through the unified band.
+
+    The fully-impactful, network/no-privilege vector scores 9.3 (critical) per
+    the FIRST reference; Rotation 16 closed the previously-unscored v4 gap.
+    """
     assert cves._severity_from_cvss_vector(
         "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+    ) == "critical"
+    # Subsequent-system impact pushes the same vector to the 10.0 corner.
+    assert cves._severity_from_cvss_vector(
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H"
+    ) == "critical"
+    # A no-impact v4 vector scores 0.0 -> info via the spec shortcut.
+    assert cves._severity_from_cvss_vector(
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N"
+    ) == "info"
+
+
+def test_severity_from_cvss_vector_malformed_v4_returns_none():
+    """A v4.0 vector missing a required base metric is unscored -> None."""
+    assert cves._severity_from_cvss_vector(
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N"  # no VC/VI/VA/SC/SI/SA
     ) is None
 
 
@@ -651,8 +670,8 @@ def test_severity_from_osv_cvss_array_beats_database_specific():
     assert cves._severity_from_osv(vuln) == "medium"
 
 
-def test_severity_from_osv_falls_back_to_database_specific_for_v4_vector():
-    """A CVSS v4.0 vector is not yet scored; fall back to database_specific."""
+def test_severity_from_osv_v4_array_beats_database_specific():
+    """A scored CVSS v4.0 vector is authoritative over database_specific."""
     vuln = {
         "severity": [
             {
@@ -662,6 +681,20 @@ def test_severity_from_osv_falls_back_to_database_specific_for_v4_vector():
                     "VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
                 ),
             }
+        ],
+        "database_specific": {"severity": "low"},
+    }
+    # 9.3 -> critical from the v4 vector, NOT low from database_specific
+    # (Rotation 16: v4 is now scored, so it wins over the per-db string).
+    assert cves._severity_from_osv(vuln) == "critical"
+
+
+def test_severity_from_osv_falls_back_to_database_specific_for_malformed_v4():
+    """A malformed/unscorable CVSS vector falls back to database_specific."""
+    vuln = {
+        "severity": [
+            # v4 prefix but missing all impact metrics -> unscorable -> None.
+            {"type": "CVSS_V4", "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N"}
         ],
         "database_specific": {"severity": "low"},
     }
@@ -740,4 +773,147 @@ def test_cves_finding_severity_derives_from_cvss_v2_array(_isolate_osv_cache):
     assert findings
     assert findings[0].severity == "medium", (
         "finding severity must derive from the 5.0 CVSS v2 vector, not default 'high'"
+    )
+
+
+# --- CVSS v4.0 vector scoring (Rotation 16) ------------------------------
+# v4.0's base score is not closed-form: it's a MacroVector lookup plus
+# severity-distance interpolation (FIRST spec section 8.2). We implement it
+# faithfully and validate against published reference scores. v4 was the last
+# unscored CVSS family — v4 vectors previously fell through to "high".
+
+
+def test_cvss4_base_score_matches_reference_corners():
+    """The v4 calculator matches the FIRST reference for MacroVector corners.
+
+    These vectors land directly on the published lookup-table scores (no
+    interpolation), so they pin the table and the macrovector reduction.
+    """
+    # Fully-impactful, network, no privileges/UI: macrovector 000200 -> 9.3.
+    assert cves._cvss4_base_score(
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+    ) == 9.3
+    # Subsequent-system high impact: macrovector 000100 -> 10.0.
+    assert cves._cvss4_base_score(
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H"
+    ) == 10.0
+
+
+def test_cvss4_base_score_no_impact_is_zero():
+    """A v4 vector with no impact on any system scores 0.0 (spec shortcut)."""
+    assert cves._cvss4_base_score(
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N"
+    ) == 0.0
+
+
+def test_cvss4_base_score_interpolates_within_macrovector():
+    """A vector between corners is interpolated, matching the FIRST reference.
+
+    ``AV:L/AC:L/AT:N/PR:L/UI:N/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N`` does not sit on a
+    lookup corner; the reference interpolates it to 4.8.
+    """
+    assert cves._cvss4_base_score(
+        "CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N"
+    ) == 4.8
+
+
+def test_cvss4_base_score_honours_threat_and_environmental_metrics():
+    """Optional E / CR / IR / AR metrics shift the score per the reference.
+
+    Lowering exploit maturity (E:U) and confidentiality requirement (CR:L)
+    reduces the score below the base-only value.
+    """
+    base = cves._cvss4_base_score(
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+    )
+    lowered = cves._cvss4_base_score(
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+        "/E:U/CR:L"
+    )
+    assert base == 9.3
+    assert lowered is not None and lowered < base
+
+
+def test_cvss4_base_score_returns_none_on_missing_metric():
+    """A v4 vector missing a required base metric yields None (caller falls back)."""
+    assert cves._cvss4_base_score("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N") is None
+    assert cves._cvss4_base_score("garbage") is None
+
+
+def test_cvss4_base_score_returns_none_on_invalid_metric_value():
+    """An unrecognised metric value yields None rather than a wrong score."""
+    assert cves._cvss4_base_score(
+        "CVSS:4.0/AV:Z/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+    ) is None
+
+
+def test_cvss4_macrovector_reduction():
+    """The MacroVector reduction matches the FIRST spec EQ partition rules."""
+    metrics = cves._cvss_vector_metrics(
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+    )
+    metrics.pop("CVSS", None)
+    assert cves._cvss4_macrovector(metrics) == "000200"
+
+
+def test_cvss4_score_maps_through_unified_severity_band():
+    """v4 base scores map through the same band the rest of casket uses."""
+    # 9.3 -> critical, 0.0 -> info, a mid vector -> medium.
+    assert cves._severity_from_cvss_vector(
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+    ) == "critical"
+    assert cves._severity_from_cvss_vector(
+        "CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N"
+    ) == "medium"
+
+
+def test_severity_from_osv_reads_standard_cvss_v4_array():
+    """A standard OSV CVSS_V4 severity array drives the qualitative severity."""
+    vuln = {
+        "id": "CVE-2024-99999",
+        "severity": [
+            {
+                "type": "CVSS_V4",
+                "score": (
+                    "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/"
+                    "VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+                ),
+            }
+        ],
+    }
+    # 9.3 -> critical via scoring, not the conservative "high" default.
+    assert cves._severity_from_osv(vuln) == "critical"
+
+
+def test_cves_finding_severity_derives_from_cvss_v4_array(_isolate_osv_cache):
+    """End-to-end: a CVE finding's severity comes from a CVSS_V4 vector."""
+    img = load_tarball(fixture_path("old-package.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    client.seed(
+        "PyPI",
+        "requests",
+        "2.19.0",
+        [
+            {
+                "id": "CVE-2024-99999",
+                "aliases": ["CVE-2024-99999"],
+                "summary": "hypothetical modern requests CVE",
+                # A v4.0 vector scoring 9.3 -> critical. Before Rotation 16 this
+                # would have fallen through to the conservative "high" default.
+                "severity": [
+                    {
+                        "type": "CVSS_V4",
+                        "score": (
+                            "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/"
+                            "VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+                        ),
+                    }
+                ],
+            }
+        ],
+    )
+    findings = cves.run(img, osv_client=client)
+    assert findings
+    assert findings[0].severity == "critical", (
+        "finding severity must derive from the 9.3 CVSS v4 vector, not default 'high'"
     )
