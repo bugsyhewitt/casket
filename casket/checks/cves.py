@@ -58,6 +58,24 @@ before. If no release marker is present we query bare ``Debian`` only —
 identical to the previous behaviour, never a crash. The reported
 ``detail["ecosystem"]`` stays the bare ``"Debian"`` for output uniformity, as
 with Alpine; the qualifier is a query-time concern only.
+
+[Worker decision: OSV reference & alias enrichment — Rotation 19]
+POST_V01 lists "GHSA / NVD reference enrichment" as a candidate next item, but
+notes both add an external network dependency and rate-limit/auth concerns. The
+OSV record casket *already fetches and caches* for severity carries that data
+itself: the ``aliases`` array (the same vuln's CVE / GHSA / distro ids) and the
+``references`` array (the upstream advisory, patch/fix, and exploit URLs OSV
+aggregates). v0.1 discarded all of it, keeping only a single CVE alias as the
+headline id and the summary. This rotation surfaces the rest into the finding
+``detail`` — the full ``aliases`` list, plus ``fix_urls`` / ``advisory_urls`` /
+``exploit_urls`` bucketed from the OSV ``references`` ``type`` enum. This makes a
+finding *actionable* (here is the patch, here is the advisory) with **zero new
+dependencies and zero new network calls** — the GHSA/NVD enrichment value
+without the external-API cost, because OSV's references already aggregate those
+upstream links. The new detail keys flow through all three output formats for
+free (json flatten, h1md bullets, SARIF result properties). Keys are omitted
+entirely when empty, so clean/seed findings and the existing tests are
+unaffected.
 """
 
 from __future__ import annotations
@@ -474,9 +492,32 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
     for pkg, vulns in zip(packages, vuln_lists):
         for vuln in vulns:
             cve_id = vuln.get("id", "UNKNOWN")
-            aliases = vuln.get("aliases", [])
+            aliases = _aliases_from_osv(vuln)
             # Prefer a CVE-style alias as the headline id when present.
             cve = next((a for a in aliases if a.startswith("CVE-")), cve_id)
+            detail: dict[str, Any] = {
+                "cve_id": cve,
+                "osv_id": cve_id,
+                "package": pkg.name,
+                "ecosystem": pkg.ecosystem,
+                "installed_version": pkg.version,
+                "summary": vuln.get("summary", ""),
+            }
+            # Surface the cross-reference identifiers and remediation/advisory
+            # links the OSV record already carries (no extra network call): the
+            # full alias list (CVE + GHSA + other DB ids) and the most
+            # actionable reference URLs (patch/fix, advisory, exploit). This is
+            # what turns a finding from "package X has CVE-Y" into "...and here
+            # is the patch and the advisory". See _references_from_osv.
+            if aliases:
+                detail["aliases"] = aliases
+            refs = _references_from_osv(vuln)
+            if refs.get("fix"):
+                detail["fix_urls"] = refs["fix"]
+            if refs.get("advisory"):
+                detail["advisory_urls"] = refs["advisory"]
+            if refs.get("exploit"):
+                detail["exploit_urls"] = refs["exploit"]
             findings.append(
                 Finding(
                     category="cve",
@@ -484,17 +525,91 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
                     severity=_severity_from_osv(vuln),
                     layer_sha=pkg.layer_sha,
                     path_in_layer=pkg.path_in_layer,
-                    detail={
-                        "cve_id": cve,
-                        "osv_id": cve_id,
-                        "package": pkg.name,
-                        "ecosystem": pkg.ecosystem,
-                        "installed_version": pkg.version,
-                        "summary": vuln.get("summary", ""),
-                    },
+                    detail=detail,
                 )
             )
     return findings
+
+
+# OSV reference ``type`` values we surface, grouped by the operator question
+# they answer. The OSV schema defines a fixed enum
+# (https://ossf.github.io/osv-schema/#references-field); we map the
+# remediation- and triage-relevant ones into three actionable buckets and
+# ignore the rest (PACKAGE/ARTICLE/INTRODUCED/etc.) to keep the report focused.
+_OSV_FIX_REF_TYPES = frozenset({"FIX"})
+_OSV_ADVISORY_REF_TYPES = frozenset({"ADVISORY", "REPORT"})
+_OSV_EXPLOIT_REF_TYPES = frozenset({"EXPLOIT", "EVIDENCE"})
+
+
+def _aliases_from_osv(vuln: dict) -> list[str]:
+    """Return the OSV record's alias ids as a clean, de-duplicated string list.
+
+    OSV records cross-reference the same vulnerability under several identifier
+    schemes (a CVE id, a GHSA id, distro-specific ids, …) in the ``aliases``
+    array. We coerce defensively — a non-list ``aliases`` or non-string entries
+    are dropped rather than crashing the scan — preserve first-seen order, and
+    de-duplicate.
+    """
+    raw = vuln.get("aliases")
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, str):
+            continue
+        entry = entry.strip()
+        if not entry or entry in seen:
+            continue
+        seen.add(entry)
+        out.append(entry)
+    return out
+
+
+def _references_from_osv(vuln: dict) -> dict[str, list[str]]:
+    """Bucket an OSV record's reference URLs into fix / advisory / exploit lists.
+
+    The OSV ``references`` array is a list of ``{"type": <enum>, "url": <str>}``
+    entries. We map the remediation- and triage-relevant ``type`` values into
+    three buckets an operator acts on — ``fix`` (the patch/remediation), the
+    ``advisory`` write-up, and any ``exploit`` proof — and ignore the rest.
+    Each bucket preserves first-seen order and de-duplicates URLs. Malformed
+    entries (non-dict, missing/blank url, non-string type) are skipped, never
+    raised, so a single bad reference never aborts a scan.
+
+    Surfacing these costs no extra network call: the URLs are already in the OSV
+    record casket fetches and caches for severity. This is the zero-dependency,
+    no-new-API path to the GHSA/NVD reference enrichment POST_V01 flagged —
+    OSV's own ``references`` already aggregate the upstream advisory and patch
+    links.
+    """
+    buckets: dict[str, list[str]] = {"fix": [], "advisory": [], "exploit": []}
+    seen: dict[str, set[str]] = {"fix": set(), "advisory": set(), "exploit": set()}
+    raw = vuln.get("references")
+    if not isinstance(raw, list):
+        return buckets
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        url = entry.get("url")
+        if not isinstance(url, str) or not url.strip():
+            continue
+        url = url.strip()
+        rtype = entry.get("type")
+        rtype = rtype.strip().upper() if isinstance(rtype, str) else ""
+        if rtype in _OSV_FIX_REF_TYPES:
+            bucket = "fix"
+        elif rtype in _OSV_ADVISORY_REF_TYPES:
+            bucket = "advisory"
+        elif rtype in _OSV_EXPLOIT_REF_TYPES:
+            bucket = "exploit"
+        else:
+            continue
+        if url in seen[bucket]:
+            continue
+        seen[bucket].add(url)
+        buckets[bucket].append(url)
+    return buckets
 
 
 def _cvss_score_to_severity(score: float) -> str:
