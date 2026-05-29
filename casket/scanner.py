@@ -49,6 +49,7 @@ def run_checks(
     selected: list[str],
     *,
     osv_client: Any = None,
+    epss_client: Any = None,
 ) -> list[Finding]:
     """Run the named checks against a loaded image and collect findings.
 
@@ -60,6 +61,13 @@ def run_checks(
     layer digest. Findings whose ``layer_sha`` is the synthetic config digest
     (misconfig checks) or whose layer has no resolvable command are left
     unannotated.
+
+    When an ``epss_client`` is supplied, CVE findings are additionally enriched
+    with their EPSS (Exploit Prediction Scoring System) score — the probability
+    that the vuln will be exploited in the wild — via a single batched lookup.
+    This is a prioritisation signal CVSS severity alone can't give: it surfaces
+    *which* of an image's many CVEs are actually being exploited. See
+    ``enrich_with_epss``.
     """
     findings: list[Finding] = []
     for name in selected:
@@ -73,7 +81,55 @@ def run_checks(
             if command is not None:
                 finding.detail["layer_command"] = command
 
+    if epss_client is not None:
+        enrich_with_epss(findings, epss_client)
+
     return findings
+
+
+def enrich_with_epss(findings: list[Finding], epss_client: Any) -> None:
+    """Annotate CVE findings in place with their EPSS score / percentile.
+
+    EPSS scores are keyed by CVE id, so only ``cve`` findings carrying a
+    ``CVE-…`` identifier are enrichable (the EPSS model covers published CVEs,
+    not GHSA / distro ids). We collect every such id, resolve them in **one**
+    batched, cache-first lookup, then attach ``epss_score`` and (when present)
+    ``epss_percentile`` to each matching finding's ``detail``. A finding whose
+    CVE has no published EPSS score, or that carries no CVE id, is left
+    untouched — the keys are omitted entirely rather than set to a sentinel, so
+    clean/seed findings and the existing output stay byte-compatible.
+
+    The ``epss_score`` flows through every output format for free (json
+    flatten, h1md bullet, SARIF result property), exactly like the other CVE
+    enrichment fields.
+    """
+    cve_ids: list[str] = []
+    for finding in findings:
+        if finding.category != "cve":
+            continue
+        cve = finding.detail.get("cve_id")
+        if isinstance(cve, str) and cve.startswith("CVE-"):
+            cve_ids.append(cve)
+
+    if not cve_ids:
+        return
+
+    scores = epss_client.scores_for(cve_ids)
+    if not scores:
+        return
+
+    for finding in findings:
+        if finding.category != "cve":
+            continue
+        cve = finding.detail.get("cve_id")
+        if not isinstance(cve, str):
+            continue
+        score = scores.get(cve)
+        if score is None:
+            continue
+        finding.detail["epss_score"] = score["score"]
+        if "percentile" in score:
+            finding.detail["epss_percentile"] = score["percentile"]
 
 
 def resolve_checks(checks_arg: str) -> list[str]:
@@ -127,6 +183,43 @@ def filter_by_severity(
         for f in findings
         if _SEVERITY_RANK.get(f.severity, 99) <= threshold
     ]
+
+
+def filter_by_epss(
+    findings: list[Finding], min_epss: float | None = None
+) -> list[Finding]:
+    """Drop CVE findings whose EPSS score is below ``min_epss`` from the report.
+
+    EPSS is the probability (0.0–1.0) that a CVE will be exploited in the wild
+    over the next 30 days. ``--min-epss 0.5`` keeps only the CVEs the EPSS model
+    rates at least 50% likely to be exploited — a far sharper triage knob than
+    CVSS severity on a busy image, where most high-CVSS OS-package CVEs are never
+    actually exploited.
+
+      - ``None`` (the default / flag absent): return every finding unchanged.
+      - a float in ``[0.0, 1.0]``: keep every **non-CVE** finding (creds /
+        misconfig have no EPSS score and are never about exploitation
+        probability), and keep a CVE finding only if its ``epss_score`` is
+        present *and* at or above the threshold.
+
+    The "drop CVEs without a score" posture is deliberate and matches what the
+    flag asks for: an explicit ``--min-epss`` is a request to see only CVEs that
+    clear an exploitation-likelihood bar, so a CVE with no published EPSS score
+    (or one that couldn't be fetched — e.g. ``--offline`` with a cold cache)
+    does not clear it. creds/misconfig findings are a different question
+    entirely and always survive an EPSS filter.
+    """
+    if min_epss is None:
+        return list(findings)
+    kept: list[Finding] = []
+    for f in findings:
+        if f.category != "cve":
+            kept.append(f)
+            continue
+        score = f.detail.get("epss_score")
+        if isinstance(score, (int, float)) and score >= min_epss:
+            kept.append(f)
+    return kept
 
 
 def exit_code(findings: list[Finding], fail_on: str = "any") -> int:
