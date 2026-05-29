@@ -115,6 +115,52 @@ def test_component_stats_by_ecosystem_sorted_by_count_desc():
     assert list(stats["by_ecosystem"].items()) == [("Debian", 3), ("PyPI", 1)]
 
 
+# ---- severity_histogram: per-severity finding counts ----------------------
+
+def _mk(category, severity):
+    return Finding(
+        category=category, title="t", severity=severity,
+        layer_sha="sha256:x", path_in_layer="p", detail={},
+    )
+
+
+class _NoPkgImage:
+    layers: list = []
+
+
+def test_severity_histogram_counts_all_categories():
+    # The histogram spans creds/cve/misconfig, not just CVE findings.
+    findings = [
+        _mk("cve", "critical"),
+        _mk("creds", "high"),
+        _mk("misconfig", "high"),
+        _mk("misconfig", "low"),
+    ]
+    stats = component_stats(_NoPkgImage(), findings)
+    assert stats["severity_histogram"] == {"critical": 1, "high": 2, "low": 1}
+
+
+def test_severity_histogram_ordered_most_severe_first():
+    findings = [_mk("cve", "info"), _mk("cve", "critical"), _mk("cve", "medium")]
+    stats = component_stats(_NoPkgImage(), findings)
+    assert list(stats["severity_histogram"].items()) == [
+        ("critical", 1), ("medium", 1), ("info", 1)
+    ]
+
+
+def test_severity_histogram_omits_empty_levels_and_is_empty_when_no_findings():
+    stats = component_stats(_NoPkgImage(), [])
+    assert stats["severity_histogram"] == {}
+
+
+def test_severity_histogram_buckets_unknown_severity_last():
+    findings = [_mk("misconfig", "weird"), _mk("cve", "high")]
+    stats = component_stats(_NoPkgImage(), findings)
+    assert list(stats["severity_histogram"].items()) == [
+        ("high", 1), ("unknown", 1)
+    ]
+
+
 # ---- report_dict / render: optional scan_stats block ----------------------
 
 def test_report_dict_omits_scan_stats_by_default():
@@ -156,6 +202,22 @@ def test_render_h1md_no_components_section_without_stats():
     assert "## Components" not in out
 
 
+def test_render_h1md_shows_severity_histogram():
+    stats = {"total_components": 2, "by_ecosystem": {"Alpine": 2},
+             "vulnerable_components": 1,
+             "severity_histogram": {"critical": 1, "high": 2}}
+    out = render([], "h1md", image="img", scan_stats=stats)
+    assert "by severity:** critical `1`, high `2`" in out
+
+
+def test_render_h1md_no_severity_line_when_histogram_empty():
+    stats = {"total_components": 0, "by_ecosystem": {},
+             "vulnerable_components": 0, "severity_histogram": {}}
+    out = render([], "h1md", image="img", scan_stats=stats)
+    assert "## Components" in out
+    assert "by severity" not in out
+
+
 def test_render_sarif_carries_scan_stats_as_run_property():
     stats = {"total_components": 2, "by_ecosystem": {"Alpine": 2},
              "vulnerable_components": 1}
@@ -194,6 +256,9 @@ def test_cli_stats_adds_scan_stats_block(capsys, _isolate_osv_cache):
     assert payload["scan_stats"]["total_components"] == 2
     assert payload["scan_stats"]["vulnerable_components"] == 1
     assert payload["scan_stats"]["by_ecosystem"] == {"Alpine": 2}
+    # The busybox CVE is the only finding; histogram reflects it (over all checks).
+    histogram = payload["scan_stats"]["severity_histogram"]
+    assert sum(histogram.values()) == payload["finding_count"]
 
 
 def test_cli_without_stats_has_no_block(capsys, _isolate_osv_cache):

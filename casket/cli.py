@@ -199,7 +199,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "add a component-count inventory summary to the report: total "
             "installed packages, a per-ecosystem breakdown (Debian/PyPI/Alpine/"
-            "RPM), and how many distinct packages are vulnerable. This is a "
+            "RPM), how many distinct packages are vulnerable, and a severity "
+            "histogram (finding counts per severity, over all checks). This is a "
             "count of the partial package inventory casket already extracts — "
             "it does NOT generate an SBOM (CycloneDX/SPDX) and adds no network "
             "calls. Shows up as a 'scan_stats' object in json/sarif and a "

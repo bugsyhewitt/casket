@@ -369,7 +369,8 @@ In `--format json` (and via `--compare`) this is a `scan_stats` object:
 "scan_stats": {
   "total_components": 412,
   "by_ecosystem": { "Debian": 405, "PyPI": 7 },
-  "vulnerable_components": 3
+  "vulnerable_components": 3,
+  "severity_histogram": { "critical": 1, "high": 4, "medium": 2 }
 }
 ```
 
@@ -380,6 +381,12 @@ In `--format json` (and via `--compare`) this is a `scan_stats` object:
   with at least one reported CVE. Computed from the *filtered* findings, so a
   CVE triaged away by `--min-severity` / `--min-epss` / `--vex` is no longer
   counted as a vulnerable component — the number matches what you see.
+- `severity_histogram` — finding counts per severity over **every** check
+  (creds, cve, *and* misconfig), ordered most-severe-first (`critical` →
+  `info`); severities with no findings are omitted. Where `finding_count`
+  answers "how many issues?", this answers "what's the severity distribution?"
+  — the canonical triage question. Like the other stats it counts the
+  *filtered* findings, so the histogram sums to `finding_count`.
 
 In `--format h1md` it renders as a **Components** section; in `--format sarif`
 it rides along as a run-level `properties.scan_stats` object. Omitting the flag
