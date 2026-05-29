@@ -63,6 +63,7 @@ casket --image REF
        --format {json,h1md,sarif}
        [--fail-on {any,critical,high,medium,low,info,none}]
        [--min-severity {all,critical,high,medium,low,info}]
+       [--suppress-severity {critical,high,medium,low,info}]
        [--min-epss PROBABILITY]
        [--vex VEX.json] [--vex-max-age DAYS]
        [--suppress-ecosystem ECOSYSTEM]
@@ -141,6 +142,40 @@ a focused gate — e.g. report high+ and fail only on critical:
 ```bash
 casket --image ./myapp.tar --checks all --min-severity high --fail-on critical
 ```
+
+### Muting exact severity bands with `--suppress-severity`
+
+`--min-severity` is a *floor* — it keeps everything at or above one threshold.
+But sometimes you want to keep the genuine risk (critical/high) **and** the
+audit-trail noise floor (info) while muting only the busy middle, or mute one
+band without dropping everything beneath it. A single floor can't express that.
+`--suppress-severity` mutes the named severity band(s) *exactly*, and is
+repeatable:
+
+```bash
+# keep critical/high AND info, drop the busy medium/low middle
+casket --image ./myapp.tar --checks all \
+  --suppress-severity medium --suppress-severity low
+
+# mute the high band alone, keeping critical and everything below high
+casket --image ./myapp.tar --checks all --suppress-severity high
+```
+
+| flag | effect |
+|---|---|
+| `--min-severity high` | keep `high` + `critical` (a floor) |
+| `--suppress-severity high` | drop `high` only; keep every other band |
+| `--suppress-severity medium --suppress-severity low` | drop the `medium`/`low` middle; keep critical/high/info |
+
+- Applies to **every** finding category (creds / cve / misconfig all carry a
+  severity), unlike the CVE-only `--min-epss` / `--vex` / `--suppress-ecosystem`
+  filters.
+- A finding with an unrecognised severity is never muted by it (an unknown band
+  is never silently hidden).
+- Like `--min-severity` / `--min-epss` / `--vex` / `--suppress-ecosystem`, the
+  filter shapes the **reported** set *before* the `--fail-on` gate and
+  `--compare` diff run, so a muted band neither shows up nor secretly trips the
+  build. It composes with `--min-severity` as an independent stage.
 
 ### Prioritising by exploitation likelihood with EPSS and `--min-epss`
 

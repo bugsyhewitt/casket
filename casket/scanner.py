@@ -230,6 +230,12 @@ FAIL_ON_CHOICES = ["any", "critical", "high", "medium", "low", "info", "none"]
 # behaviour; a severity name suppresses anything *below* it from the report.
 MIN_SEVERITY_CHOICES = ["all", "critical", "high", "medium", "low", "info"]
 
+# Accepted --suppress-severity values (for the CLI choices list). Each is an
+# *exact* severity band to mute — unlike --min-severity's floor, naming a level
+# here drops that level alone, so an operator can carve out an arbitrary band
+# (e.g. mute medium+low while keeping critical/high AND info).
+SUPPRESS_SEVERITY_CHOICES = ["critical", "high", "medium", "low", "info"]
+
 
 def filter_by_severity(
     findings: list[Finding], min_severity: str = "all"
@@ -395,6 +401,43 @@ def filter_by_ecosystem(
             continue
         kept.append(f)
     return kept
+
+
+def filter_by_severity_band(
+    findings: list[Finding], suppressed: set[str] | None = None
+) -> list[Finding]:
+    """Drop findings whose severity is in an operator-named set of bands.
+
+    Where ``--min-severity`` is a *floor* (keep everything at-or-above one
+    threshold), this is a *band* mute (drop exactly the named levels), so the two
+    knobs together can carve out any arbitrary severity range. The motivating
+    case ``--min-severity`` cannot express: keep the genuine risk (critical/high)
+    **and** the audit-trail noise floor (info) while muting the busy middle —
+    ``--suppress-severity medium --suppress-severity low`` does exactly that,
+    something no single floor can (dropping low with ``--min-severity`` would
+    also drop info, and there is no upper bound to mute high while keeping
+    critical+info). Naming several levels mutes several bands at once.
+
+    ``suppressed`` is a set of severity names to hide. It applies to **every**
+    finding category (creds / cve / misconfig all carry a severity), unlike the
+    CVE-only ecosystem/EPSS/VEX filters — a severity band is a cross-category
+    notion.
+
+      - ``None`` / empty set (no ``--suppress-severity`` flag): return every
+        finding unchanged (no-op, casket's original behaviour).
+      - otherwise: keep a finding only when its ``severity`` is *not* in the
+        suppress set. A finding whose severity is unrecognised is never in the
+        (validated) suppress set, so it always survives — an unknown severity is
+        never silently hidden by this filter.
+
+    Like ``--min-severity`` / ``--min-epss`` / ``--vex`` / ``--suppress-ecosystem``
+    this shapes the *reported* set before the exit-code gate / ``--compare`` diff
+    runs, so what fails the build matches what the operator sees — a band muted
+    here neither shows up nor secretly trips the gate.
+    """
+    if not suppressed:
+        return list(findings)
+    return [f for f in findings if f.severity not in suppressed]
 
 
 def exit_code(findings: list[Finding], fail_on: str = "any") -> int:

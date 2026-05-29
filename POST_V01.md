@@ -991,6 +991,62 @@ inside the daemonless / no-SBOM / network-free architecture, and touches no
 sort/render/gate/diff internals beyond slotting one more filter into the
 established pipeline — the highest-value, lowest-risk remaining reporting knob.
 
+### Item 22 — `--suppress-severity` exact-band filter
+
+**Priority: MEDIUM. ✅ IMPLEMENTED (Phase 2, Rotation 29).**
+
+**The gap.** The Rotation-29 dispatch named two candidates —
+`--output-filter suppress-by-severity-range` and an "SBOM-linked severity
+report". The SBOM-linked severity report was already shipped: the `--stats`
+block (`vulnerable_components` + `severity_histogram`, Items 19/20) realises the
+SBOM-count-with-severity intent inside the no-SBOM guardrail. So the pick was the
+unshipped severity-range filter. The real gap it closes: every existing severity
+report knob is a *floor* — `--min-severity` keeps everything *at or above* one
+threshold, and there is no way to mute a *specific band* without also dropping
+everything beneath it. An operator who wants to keep the genuine risk
+(critical/high) **and** the audit-trail noise floor (info) while muting only the
+busy medium/low middle — or to mute the high band while keeping critical+info —
+could not express it: dropping low with `--min-severity` also drops info, and
+there is no upper bound to isolate a band. This is exactly the "suppress by
+severity range" the dispatch asked for, framed as a composable band mute.
+
+**What shipped.** A new `--suppress-severity SEVERITY` flag (repeatable,
+`action="append"`, `choices` = the five canonical bands) and a
+`filter_by_severity_band(findings, suppressed)` pure decision function in
+`casket.scanner` — the sixth member of the established filter family
+(`filter_by_severity` / `filter_by_epss` / `filter_by_vex` /
+`filter_by_ecosystem`). It drops every finding whose `severity` is in the named
+set, leaving every other band untouched, so naming several levels carves out any
+arbitrary range. Unlike the CVE-only ecosystem/EPSS/VEX filters it applies to
+**every** finding category (creds / cve / misconfig all carry a severity — a
+band is a cross-category notion). A finding with an unrecognised severity is
+never in the validated suppress set, so it always survives (an unknown band is
+never silently hidden). Wired into `cli.main` *after* the ecosystem filter (last
+in the filter chain) so it shapes the same reported set before the `--fail-on`
+gate and `--compare` diff — what fails the build matches what the operator sees —
+and it composes with `--min-severity` as an independent stage. Zero new
+dependencies, zero network (works fully `--offline`); absent the flag the output
+is byte-for-byte unchanged.
+
+**Validation.** 20 new tests in `tests/test_suppress_severity.py` (389→409
+total, full suite green): the pure filter (none/empty/default no-op, empty input,
+single-band mute, multi-band middle-mute, upper-band mute keeping critical+info,
+cross-category application, unknown-severity survival, suppress-every-band
+emptying, new-list return), the CLI surface (default `None`, repeatable append,
+bad-band rejection, help listing), and six end-to-end runs against the
+`rootuser-image` fixture (no-flag two-band baseline, suppress-medium-keeps-high,
+suppress-high-band-only — the case `--min-severity` can't express —
+suppress-both-empties-and-gate-passes, and band+`--min-severity` composition).
+
+**Why this was the pick.** Of the two dispatched candidates the SBOM-linked
+severity report was already shipped (`--stats`), so this closed the genuine
+unshipped gap; it is the natural completion of the report-filter family (a *band*
+mute to complement the existing *floor*), reuses the proven pure-decision-function
+pattern with zero new dependencies and zero network, stays strictly inside the
+daemonless / no-SBOM / network-free architecture, and touches no
+sort/render/gate/diff internals beyond slotting one more filter into the
+established pipeline — the highest-value, lowest-risk reporting knob remaining.
+
 ### Candidate next items (not yet done)
 - **GHSA / NVD reference enrichment** — cross-link CVE findings to GHSA
   identifiers (GitHub Advisory DB) or surface NVD `references` (exploit / patch

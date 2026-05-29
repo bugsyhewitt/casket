@@ -26,11 +26,13 @@ from casket.findings import render, report_dict
 from casket.scanner import (
     FAIL_ON_CHOICES,
     MIN_SEVERITY_CHOICES,
+    SUPPRESS_SEVERITY_CHOICES,
     component_stats,
     exit_code,
     filter_by_ecosystem,
     filter_by_epss,
     filter_by_severity,
+    filter_by_severity_band,
     filter_by_vex,
     load_image,
     resolve_checks,
@@ -213,6 +215,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--suppress-severity",
+        action="append",
+        default=None,
+        choices=SUPPRESS_SEVERITY_CHOICES,
+        metavar="SEVERITY",
+        help=(
+            "suppress findings at exactly this severity band (critical, high, "
+            "medium, low, info); repeatable. Where --min-severity is a floor "
+            "(keep everything at-or-above one level), this mutes the named "
+            "level(s) alone, so the two together can carve out any range — e.g. "
+            "--suppress-severity medium --suppress-severity low keeps "
+            "critical/high AND info while dropping the busy middle (something a "
+            "single --min-severity floor can't express). Applies to every "
+            "finding category. Like the other report filters it shapes the "
+            "reported set before the gate/diff, so a muted band neither shows up "
+            "nor trips the exit-code gate. Omitting the flag reports every "
+            "finding (default)."
+        ),
+    )
+    parser.add_argument(
         "--stats",
         action="store_true",
         help=(
@@ -369,6 +391,16 @@ def main(argv: list[str] | None = None) -> int:
         set(args.suppress_ecosystem) if args.suppress_ecosystem else None
     )
     findings = filter_by_ecosystem(findings, ecosystem_suppressed)
+    # --suppress-severity mutes operator-named severity bands *exactly* (unlike
+    # --min-severity's floor), so an arbitrary range can be carved out — e.g.
+    # keep critical/high + info, drop medium/low. Applies to every category. Like
+    # the other report filters it shapes the *reported* set before the gate /
+    # diff, so what fails the build matches what the operator sees. Absent (the
+    # default) it is a no-op.
+    severity_suppressed = (
+        set(args.suppress_severity) if args.suppress_severity else None
+    )
+    findings = filter_by_severity_band(findings, severity_suppressed)
 
     # --stats attaches a component-count inventory summary (total packages,
     # per-ecosystem breakdown, vulnerable-package count) to the report. Computed
