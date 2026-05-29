@@ -541,6 +541,93 @@ def test_cvss_score_to_severity_band_boundaries():
     assert cves._cvss_score_to_severity(0.0) == "info"
 
 
+# --- CVSS v2 vector scoring (Rotation 14) --------------------------------
+# Older CVEs (on the aged packages a container scanner routinely finds) are
+# frequently recorded by OSV with legacy CVSS v2 vectors. Rotation 13 scored
+# only v3.x and so defaulted those to "high"; we now score v2 faithfully.
+
+
+def test_cvss2_base_score_matches_spec_reference_vectors():
+    """The stdlib CVSS v2.0 calculator matches published reference base scores."""
+    # AV:N/AC:L/Au:N/C:P/I:P/A:P (e.g. CVE-2002-0392) -> 7.5
+    assert cves._cvss2_base_score(
+        "AV:N/AC:L/Au:N/C:P/I:P/A:P"
+    ) == 7.5
+    # Full network compromise -> 10.0
+    assert cves._cvss2_base_score(
+        "AV:N/AC:L/Au:N/C:C/I:C/A:C"
+    ) == 10.0
+    # AV:N/AC:M/Au:N/C:P/I:N/A:N -> 4.3
+    assert cves._cvss2_base_score(
+        "AV:N/AC:M/Au:N/C:P/I:N/A:N"
+    ) == 4.3
+    # AV:N/AC:L/Au:N/C:N/I:N/A:P -> 5.0
+    assert cves._cvss2_base_score(
+        "AV:N/AC:L/Au:N/C:N/I:N/A:P"
+    ) == 5.0
+
+
+def test_cvss2_base_score_accepts_version_prefix():
+    """A ``CVSS:2.0/`` version prefix is tolerated and scored as v2."""
+    assert cves._cvss2_base_score(
+        "CVSS:2.0/AV:N/AC:L/Au:N/C:C/I:C/A:C"
+    ) == 10.0
+
+
+def test_cvss2_base_score_zero_impact_is_zero():
+    """A v2 vector with no CIA impact yields a 0.0 base score (info band)."""
+    assert cves._cvss2_base_score("AV:N/AC:L/Au:N/C:N/I:N/A:N") == 0.0
+
+
+def test_cvss2_base_score_returns_none_on_missing_metric():
+    """A v2 vector missing a required metric yields None (caller falls back)."""
+    assert cves._cvss2_base_score("AV:N/AC:L/Au:N") is None
+    assert cves._cvss2_base_score("garbage") is None
+
+
+def test_severity_from_cvss_vector_scores_v2_prefixed():
+    """A ``CVSS:2.0/`` prefixed vector maps through the unified band function."""
+    assert cves._severity_from_cvss_vector(
+        "CVSS:2.0/AV:N/AC:L/Au:N/C:C/I:C/A:C"
+    ) == "critical"
+
+
+def test_severity_from_cvss_vector_disambiguates_prefixless_v2_by_au():
+    """A prefix-less vector carrying the v2-only ``Au`` metric is scored as v2."""
+    # AV:N/AC:L/Au:N/C:P/I:P/A:P -> 7.5 -> high (v2 formula, not v3).
+    assert cves._severity_from_cvss_vector(
+        "AV:N/AC:L/Au:N/C:P/I:P/A:P"
+    ) == "high"
+
+
+def test_severity_from_cvss_vector_v4_unscored():
+    """A CVSS v4.0 vector is not scored here and returns None."""
+    assert cves._severity_from_cvss_vector(
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+    ) is None
+
+
+def test_severity_from_osv_reads_standard_cvss_v2_array():
+    """A standard OSV CVSS_V2 severity array drives the qualitative severity."""
+    vuln = {
+        "id": "CVE-2002-0392",
+        "severity": [{"type": "CVSS_V2", "score": "AV:N/AC:L/Au:N/C:P/I:P/A:P"}],
+    }
+    # 7.5 -> high via the unified band, not the conservative "high" default
+    # (this vector deliberately also lands on "high" but through scoring).
+    assert cves._severity_from_osv(vuln) == "high"
+
+
+def test_severity_from_osv_v2_array_beats_database_specific():
+    """A scored v2 vector is authoritative over database_specific.severity."""
+    vuln = {
+        "severity": [{"type": "CVSS_V2", "score": "AV:N/AC:L/Au:N/C:N/I:N/A:P"}],
+        "database_specific": {"severity": "critical"},
+    }
+    # 5.0 -> medium from the v2 vector, NOT critical from database_specific.
+    assert cves._severity_from_osv(vuln) == "medium"
+
+
 def test_severity_from_osv_reads_standard_cvss_array():
     """A standard OSV ``severity`` CVSS_V3 array drives the qualitative severity."""
     vuln = {
@@ -564,10 +651,18 @@ def test_severity_from_osv_cvss_array_beats_database_specific():
     assert cves._severity_from_osv(vuln) == "medium"
 
 
-def test_severity_from_osv_falls_back_to_database_specific_for_non_v3_vector():
-    """A non-v3 (e.g. CVSS v2) vector is unscored; fall back to database_specific."""
+def test_severity_from_osv_falls_back_to_database_specific_for_v4_vector():
+    """A CVSS v4.0 vector is not yet scored; fall back to database_specific."""
     vuln = {
-        "severity": [{"type": "CVSS_V2", "score": "AV:N/AC:L/Au:N/C:P/I:P/A:P"}],
+        "severity": [
+            {
+                "type": "CVSS_V4",
+                "score": (
+                    "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/"
+                    "VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+                ),
+            }
+        ],
         "database_specific": {"severity": "low"},
     }
     assert cves._severity_from_osv(vuln) == "low"
@@ -617,4 +712,32 @@ def test_cves_finding_severity_derives_from_cvss_array(_isolate_osv_cache):
     assert findings
     assert findings[0].severity == "critical", (
         "finding severity must derive from the 9.8 CVSS vector, not default 'high'"
+    )
+
+
+def test_cves_finding_severity_derives_from_cvss_v2_array(_isolate_osv_cache):
+    """End-to-end: a CVE finding's severity comes from a legacy CVSS_V2 vector."""
+    img = load_tarball(fixture_path("old-package.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    client.seed(
+        "PyPI",
+        "requests",
+        "2.19.0",
+        [
+            {
+                "id": "CVE-2018-18074",
+                "aliases": ["CVE-2018-18074"],
+                "summary": "requests sends auth on redirect",
+                # A legacy v2 vector scoring 5.0 -> medium. The old code (v3
+                # only) would have defaulted this to "high".
+                "severity": [
+                    {"type": "CVSS_V2", "score": "AV:N/AC:L/Au:N/C:N/I:N/A:P"}
+                ],
+            }
+        ],
+    )
+    findings = cves.run(img, osv_client=client)
+    assert findings
+    assert findings[0].severity == "medium", (
+        "finding severity must derive from the 5.0 CVSS v2 vector, not default 'high'"
     )
