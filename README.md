@@ -66,6 +66,7 @@ casket --image REF
        [--min-epss PROBABILITY]
        [--vex VEX.json] [--vex-max-age DAYS]
        [--compare BASELINE.json]
+       [--stats]
        [--offline]
        [--token TOKEN]
        [--registry-user USER] [--registry-password PASS]
@@ -348,6 +349,46 @@ only ever considers high+ findings on both sides). `--fail-on` is ignored in
 compare mode — the diff gates on *new* findings instead, which is the
 actionable CI signal. The baseline must be a casket `--format json` report; any
 other file produces a clean exit-2 error rather than a traceback.
+
+### Component-count inventory with `--stats`
+
+`finding_count` tells you how many *vulnerabilities* a scan found — but not how
+big the image's attack surface is, or how much of it is actually affected. A
+single ancient package can carry a dozen CVEs and inflate `finding_count` while
+only *one* component is at fault. `--stats` adds a component-count inventory
+summary so you can see the shape of what was scanned:
+
+```bash
+# add a component-count summary to the report
+casket --image ./myapp.tar --checks cves --stats
+```
+
+In `--format json` (and via `--compare`) this is a `scan_stats` object:
+
+```json
+"scan_stats": {
+  "total_components": 412,
+  "by_ecosystem": { "Debian": 405, "PyPI": 7 },
+  "vulnerable_components": 3
+}
+```
+
+- `total_components` — every installed package casket extracted across all
+  layers (PyPI, Debian/Ubuntu, Alpine, RPM).
+- `by_ecosystem` — the per-ecosystem breakdown, sorted by descending count.
+- `vulnerable_components` — the number of **distinct** packages (name@version)
+  with at least one reported CVE. Computed from the *filtered* findings, so a
+  CVE triaged away by `--min-severity` / `--min-epss` / `--vex` is no longer
+  counted as a vulnerable component — the number matches what you see.
+
+In `--format h1md` it renders as a **Components** section; in `--format sarif`
+it rides along as a run-level `properties.scan_stats` object. Omitting the flag
+leaves output byte-for-byte unchanged (default).
+
+This is a count of the partial package inventory casket already reads while
+scanning — it does **not** generate an SBOM (CycloneDX/SPDX), stays inside the
+daemonless / no-SBOM-generation architecture, and adds **zero** network calls
+(the inventory is extracted from layer files; `--stats` works fully `--offline`).
 
 ### tarball mode (no dependencies)
 

@@ -465,6 +465,27 @@ def _extract_packages(layer: Layer) -> list[Package]:
     return found
 
 
+def package_inventory(image: Image) -> list[Package]:
+    """Return every installed package the CVE check can extract from an image.
+
+    This is the *partial package inventory* casket already builds while scanning
+    (PyPI / Debian / Alpine / RPM records — see the module docstring), surfaced
+    as a standalone, **network-free** call. ``run`` uses it to build its OSV
+    jobs; ``casket.scanner.component_stats`` uses it to report per-ecosystem
+    component counts without producing a full SBOM artifact (the "no SBOM
+    generation" v0.1 guardrail stands — this is a count of what's already read,
+    not a generated CycloneDX/SPDX document).
+
+    Extraction reads layer files only; it never touches OSV.dev or any network.
+    Packages are returned in layer order, with no de-duplication (a package
+    recorded in two layers appears twice, matching what ``run`` resolves).
+    """
+    packages: list[Package] = []
+    for layer in image.layers:
+        packages.extend(_extract_packages(layer))
+    return packages
+
+
 def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
     client = osv_client or OSVClient()
     findings: list[Finding] = []
@@ -487,9 +508,7 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
     # name first (what the live API needs) with the bare ecosystem as a fallback
     # (under which the seed DB / warm cache are keyed). query_batch dedupes and
     # skips falsy candidates, exactly like query_ecosystems.
-    packages: list[Package] = []
-    for layer in image.layers:
-        packages.extend(_extract_packages(layer))
+    packages = package_inventory(image)
 
     jobs: list[tuple[list[str], str, str]] = []
     for pkg in packages:

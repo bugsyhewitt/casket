@@ -849,6 +849,60 @@ the daemonless/no-SBOM architecture, and it closes the most-requested triage gap
 — "which of my forty `high` findings do I fix first?" — without touching any of
 the consuming gate/filter/sort surfaces.
 
+### Item 19 — `--stats` component-count inventory summary
+
+**Priority: MEDIUM. ✅ IMPLEMENTED (Phase 2, Rotation 26).**
+
+**The gap.** The dispatch named two candidates — "numeric CVSS score/version/
+vector surfacing" and "OSV batch query optimisation" — but both were already
+shipped: the CVSS score/version/vector landed in Rotation 25 (Item 18) and the
+batched `/v1/querybatch` path landed in Rotation 16 (Item 15, `osv.query_batch`).
+The dispatch also floated "SBOM component count stats", but full SBOM generation
+is explicitly out of scope (NOT-on-list, line ~878). So this was a fresh gap
+pick that *honours the SBOM-count intent without crossing the no-SBOM guardrail*.
+The real gap: casket reported only `finding_count` — the number of
+*vulnerabilities* — with no visibility into the image's component inventory. An
+operator couldn't see how big the attack surface was (how many packages were
+scanned) or how much of it was actually affected. `finding_count` conflates the
+two: a single ancient package carrying a dozen CVEs inflates the count while
+only *one* component is at fault.
+
+**What shipped.** A new `--stats` flag attaches a `scan_stats` block to the
+report: `total_components` (every installed package extracted across all
+layers), `by_ecosystem` (the per-ecosystem breakdown, sorted by descending
+count), and `vulnerable_components` (the number of *distinct* `name@version`
+packages with at least one reported CVE — deduped, so one package's many CVEs
+count once). A new network-free `casket.checks.cves.package_inventory(image)`
+surfaces the partial package inventory the CVE check already builds (the `run`
+inventory pass now flows through it, so there's a single extraction path), and
+`casket.scanner.component_stats(image, findings)` aggregates it. The stats are
+computed from the *filtered* findings, so a CVE triaged away by
+`--min-severity`/`--min-epss`/`--vex` no longer counts as a vulnerable
+component — the number matches what the operator sees. The block flows through
+all three output formats: a `scan_stats` object in json (and `--compare`, which
+ignores the key — it's finding-centric), a **Components** section in h1md, and a
+run-level `properties.scan_stats` object in sarif. Omitted entirely when the
+flag is absent, so default output is byte-for-byte unchanged.
+
+**Validation.** 18 new tests in `tests/test_stats.py` (348→366 total):
+`package_inventory` returning the full inventory (incl. the clean package the
+finding count misses) and empty for a DB-less image; `component_stats` counting
+the full inventory not just findings, the zero-inventory case, vulnerable-package
+dedup by identity, and the descending-count ecosystem sort; `report_dict`/
+`render` omitting the block by default and carrying it in all three formats; and
+the `--stats` CLI flag end-to-end (json block, default omission, `--help`
+listing, and `--compare` mode running cleanly with the key present). The full
+suite passes.
+
+**Why this was the pick.** Both dispatched options were already shipped, so this
+is the next best gap: it realises the dispatch's "SBOM component count stats"
+intent while staying strictly inside the daemonless / no-SBOM-generation
+architecture (it counts what casket already reads — no CycloneDX/SPDX artifact),
+reuses the proven `report_dict`/`render` surfacing path with zero new
+dependencies and zero network (works fully `--offline`), and closes a real
+triage-context gap — "how big is my attack surface, and how much of it is
+actually vulnerable?" — that `finding_count` alone can't answer.
+
 ### Candidate next items (not yet done)
 
 - **GHSA / NVD reference enrichment** — cross-link CVE findings to GHSA

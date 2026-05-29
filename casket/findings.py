@@ -81,44 +81,96 @@ def _severity_key(finding: Finding) -> tuple[int, str]:
     return (_SEVERITY_RANK.get(finding.severity, 99), finding.category)
 
 
-def render(findings: list[Finding], fmt: str, *, image: str) -> str:
-    """Render findings in the requested format."""
+def render(
+    findings: list[Finding],
+    fmt: str,
+    *,
+    image: str,
+    scan_stats: dict[str, Any] | None = None,
+) -> str:
+    """Render findings in the requested format.
+
+    ``scan_stats`` (when supplied — see ``casket.scanner.component_stats``) adds
+    a component-count summary to the output: a ``scan_stats`` object in json /
+    sarif, and a **Components** section in h1md. Omitted entirely when ``None``,
+    so the default output is byte-for-byte unchanged.
+    """
     ordered = sorted(findings, key=_severity_key)
     if fmt == "json":
-        return _render_json(ordered, image=image)
+        return _render_json(ordered, image=image, scan_stats=scan_stats)
     if fmt == "h1md":
-        return _render_h1md(ordered, image=image)
+        return _render_h1md(ordered, image=image, scan_stats=scan_stats)
     if fmt == "sarif":
-        return _render_sarif(ordered, image=image)
+        return _render_sarif(ordered, image=image, scan_stats=scan_stats)
     raise ValueError(f"unknown format: {fmt!r}")
 
 
-def report_dict(findings: list[Finding], *, image: str) -> dict[str, Any]:
+def report_dict(
+    findings: list[Finding],
+    *,
+    image: str,
+    scan_stats: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build the canonical casket JSON report object (sorted by severity).
 
     This is the in-memory form of the ``--format json`` output; ``_render_json``
     serializes it, and ``--compare`` consumes it directly without a serialize /
     re-parse round-trip.
+
+    When ``scan_stats`` is supplied it is attached under a ``scan_stats`` key
+    (component-count inventory summary). Omitted when ``None`` so the report
+    shape is unchanged by default — ``--compare`` ignores the key.
     """
     ordered = sorted(findings, key=_severity_key)
-    return {
+    report: dict[str, Any] = {
         "tool": "casket",
         "image": image,
         "finding_count": len(ordered),
         "findings": [f.to_dict() for f in ordered],
     }
+    if scan_stats is not None:
+        report["scan_stats"] = scan_stats
+    return report
 
 
-def _render_json(findings: list[Finding], *, image: str) -> str:
-    return json.dumps(report_dict(findings, image=image), indent=2, sort_keys=False)
+def _render_json(
+    findings: list[Finding],
+    *,
+    image: str,
+    scan_stats: dict[str, Any] | None = None,
+) -> str:
+    return json.dumps(
+        report_dict(findings, image=image, scan_stats=scan_stats),
+        indent=2,
+        sort_keys=False,
+    )
 
 
-def _render_h1md(findings: list[Finding], *, image: str) -> str:
+def _render_h1md(
+    findings: list[Finding],
+    *,
+    image: str,
+    scan_stats: dict[str, Any] | None = None,
+) -> str:
     lines: list[str] = []
     lines.append(f"# casket scan report: `{image}`")
     lines.append("")
     lines.append(f"**Findings:** {len(findings)}")
     lines.append("")
+    if scan_stats is not None:
+        lines.append("## Components")
+        lines.append("")
+        lines.append(
+            f"- **total components:** `{scan_stats.get('total_components', 0)}`"
+        )
+        lines.append(
+            "- **vulnerable components:** "
+            f"`{scan_stats.get('vulnerable_components', 0)}`"
+        )
+        by_ecosystem = scan_stats.get("by_ecosystem") or {}
+        for ecosystem, count in by_ecosystem.items():
+            lines.append(f"- **{ecosystem}:** `{count}`")
+        lines.append("")
     if not findings:
         lines.append("_No findings._")
         return "\n".join(lines) + "\n"
@@ -173,7 +225,12 @@ def _sarif_message(finding: Finding) -> str:
     return " ".join(parts)
 
 
-def _render_sarif(findings: list[Finding], *, image: str) -> str:
+def _render_sarif(
+    findings: list[Finding],
+    *,
+    image: str,
+    scan_stats: dict[str, Any] | None = None,
+) -> str:
     """Render findings as a SARIF 2.1.0 document.
 
     One ``rule`` per distinct finding type (deduped by rule id), one ``result``
@@ -232,21 +289,25 @@ def _render_sarif(findings: list[Finding], *, image: str) -> str:
             }
         )
 
+    run: dict[str, Any] = {
+        "tool": {
+            "driver": {
+                "name": "casket",
+                "version": __version__,
+                "informationUri": _SARIF_INFO_URI,
+                "rules": rules,
+            }
+        },
+        "results": results,
+    }
+    # Component-count inventory summary rides along as a run-level property so
+    # SARIF consumers see it without disturbing the result/rule shape. Omitted
+    # entirely when stats weren't requested (default), keeping output unchanged.
+    if scan_stats is not None:
+        run["properties"] = {"scan_stats": scan_stats}
     doc = {
         "$schema": _SARIF_SCHEMA,
         "version": "2.1.0",
-        "runs": [
-            {
-                "tool": {
-                    "driver": {
-                        "name": "casket",
-                        "version": __version__,
-                        "informationUri": _SARIF_INFO_URI,
-                        "rules": rules,
-                    }
-                },
-                "results": results,
-            }
-        ],
+        "runs": [run],
     }
     return json.dumps(doc, indent=2, sort_keys=False)

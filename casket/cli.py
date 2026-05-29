@@ -26,6 +26,7 @@ from casket.findings import render, report_dict
 from casket.scanner import (
     FAIL_ON_CHOICES,
     MIN_SEVERITY_CHOICES,
+    component_stats,
     exit_code,
     filter_by_epss,
     filter_by_severity,
@@ -193,6 +194,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--stats",
+        action="store_true",
+        help=(
+            "add a component-count inventory summary to the report: total "
+            "installed packages, a per-ecosystem breakdown (Debian/PyPI/Alpine/"
+            "RPM), and how many distinct packages are vulnerable. This is a "
+            "count of the partial package inventory casket already extracts — "
+            "it does NOT generate an SBOM (CycloneDX/SPDX) and adds no network "
+            "calls. Shows up as a 'scan_stats' object in json/sarif and a "
+            "'Components' section in h1md. Omitting the flag leaves output "
+            "unchanged (default)."
+        ),
+    )
+    parser.add_argument(
         "--compare",
         metavar="BASELINE.json",
         help=(
@@ -325,6 +340,13 @@ def main(argv: list[str] | None = None) -> int:
     # no-op; creds/misconfig findings are never pruned by it.
     findings = filter_by_vex(findings, vex_suppressed)
 
+    # --stats attaches a component-count inventory summary (total packages,
+    # per-ecosystem breakdown, vulnerable-package count) to the report. Computed
+    # from the *filtered* findings so the vulnerable count reflects what the
+    # operator sees. Network-free (reuses the inventory the CVE check extracts);
+    # None when the flag is absent, leaving the report shape unchanged.
+    scan_stats = component_stats(image, findings) if args.stats else None
+
     if args.compare:
         # Diff mode: compare this scan against a previous casket JSON report and
         # gate on *new* findings (regressions), not the absolute finding set.
@@ -339,13 +361,13 @@ def main(argv: list[str] | None = None) -> int:
         except (ValueError, OSError) as exc:
             print(f"casket: failed to read baseline: {exc}", file=sys.stderr)
             return 2
-        current = report_dict(findings, image=args.image)
+        current = report_dict(findings, image=args.image, scan_stats=scan_stats)
         diff = diff_reports(baseline, current)
         print(render_diff_json(diff))
         # Exit 1 iff this build introduced new findings versus the baseline.
         return 1 if regression_count(diff) > 0 else 0
 
-    output = render(findings, args.format, image=args.image)
+    output = render(findings, args.format, image=args.image, scan_stats=scan_stats)
     print(output)
     return exit_code(findings, args.fail_on)
 

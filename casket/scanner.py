@@ -132,6 +132,59 @@ def enrich_with_epss(findings: list[Finding], epss_client: Any) -> None:
             finding.detail["epss_percentile"] = score["percentile"]
 
 
+def component_stats(image: Image, findings: list[Finding]) -> dict[str, Any]:
+    """Summarize the image's package inventory as component-count statistics.
+
+    This realizes the "SBOM component count stats" idea **without** crossing the
+    "no SBOM generation" v0.1 guardrail: it does not emit a CycloneDX/SPDX
+    document — it reports *counts* of the partial package inventory the CVE check
+    already extracts (``casket.checks.cves.package_inventory``, network-free).
+
+    The returned block:
+
+      - ``total_components``: total installed packages extracted across all
+        layers (an image with no resolvable package DBs reports ``0``).
+      - ``by_ecosystem``: ``{ecosystem: count}`` (e.g. ``{"Debian": 412,
+        "PyPI": 7}``), sorted by descending count then name for stable output.
+      - ``vulnerable_components``: the number of *distinct* packages
+        (name@version per ecosystem) that have at least one CVE finding — i.e.
+        how much of the inventory is actually affected, which a raw
+        ``finding_count`` (one per vuln, so a single package can inflate it)
+        does not tell you.
+
+    ``findings`` is the already-filtered finding set so the vulnerable count
+    reflects what the operator sees (a CVE triaged away by --vex/--min-severity
+    is no longer counted as a vulnerable component). Only ``cve`` findings carry
+    package identity, so creds/misconfig findings are ignored here.
+    """
+    from casket.checks.cves import package_inventory
+
+    packages = package_inventory(image)
+    by_ecosystem: dict[str, int] = {}
+    for pkg in packages:
+        by_ecosystem[pkg.ecosystem] = by_ecosystem.get(pkg.ecosystem, 0) + 1
+
+    vulnerable: set[tuple[str, str, str]] = set()
+    for f in findings:
+        if f.category != "cve":
+            continue
+        detail = f.detail
+        eco = detail.get("ecosystem")
+        name = detail.get("package")
+        version = detail.get("installed_version")
+        if isinstance(eco, str) and isinstance(name, str) and isinstance(version, str):
+            vulnerable.add((eco, name, version))
+
+    ordered = dict(
+        sorted(by_ecosystem.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+    return {
+        "total_components": len(packages),
+        "by_ecosystem": ordered,
+        "vulnerable_components": len(vulnerable),
+    }
+
+
 def resolve_checks(checks_arg: str) -> list[str]:
     """Translate the --checks value into a concrete check list."""
     if checks_arg == "all":
