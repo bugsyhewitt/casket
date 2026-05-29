@@ -543,6 +543,7 @@ def build_all() -> dict[str, str]:
     )
 
     # rootuser-image: config declares USER root -> misconfig.
+    # Also exposes 22/tcp (SSH) -> sensitive_port misconfig.
     digests["rootuser-image"] = build_oci_image(
         FIXTURE_DIR / "rootuser-image.tar",
         layers=[{"app/run.sh": b"#!/bin/sh\necho run\n"}],
@@ -554,6 +555,25 @@ def build_all() -> dict[str, str]:
                     "PATH=/usr/bin",
                     "API_TOKEN=supersecrettoken1234567890",
                 ],
+            }
+        },
+    )
+
+    # ports-image: a non-root image that exposes both a benign app port
+    # (8080/tcp -> generic exposed_port) and several sensitive service ports
+    # (5432/tcp PostgreSQL, 2375/tcp unencrypted Docker API -> sensitive_port).
+    digests["ports-image"] = build_oci_image(
+        FIXTURE_DIR / "ports-image.tar",
+        layers=[{"app/run.sh": b"#!/bin/sh\necho run\n"}],
+        config_overrides={
+            "config": {
+                "User": "appuser",
+                "ExposedPorts": {
+                    "8080/tcp": {},
+                    "5432/tcp": {},
+                    "2375/tcp": {},
+                },
+                "Env": ["PATH=/usr/bin"],
             }
         },
     )

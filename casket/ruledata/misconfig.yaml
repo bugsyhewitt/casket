@@ -9,13 +9,46 @@
 #   kind:       which config aspect to inspect — one of:
 #                 running_as_root      (config.User is empty or "root"/"0")
 #                 exposed_port         (any entry in config.ExposedPorts)
+#                 sensitive_port       (a well-known sensitive service port is exposed)
 #                 suspicious_env       (env var name matches a secret-ish pattern)
+#
+# Port handling: a port that matches the sensitive_port rule's ``ports`` map is
+# reported once, at the per-port severity from that map, with the service name
+# surfaced for triage. It is *not* also reported by the generic exposed_port
+# rule — so a sensitive port produces a single, higher-signal finding rather than
+# a duplicate low-severity one. All other exposed ports fall through to the
+# generic exposed_port rule at its baseline (low) severity.
 rules:
   - id: running_as_root
     rule: running_as_root
     title: "Container configured to run as root"
     severity: high
     kind: running_as_root
+
+  - id: sensitive_port
+    rule: sensitive_port
+    title: "Image exposes a sensitive service port"
+    kind: sensitive_port
+    # port number (as a string) -> {service, severity}. Matching is on the port
+    # number alone, regardless of the /tcp or /udp protocol suffix in
+    # config.ExposedPorts (e.g. both "22/tcp" and "22" match port 22).
+    ports:
+      "22": {service: "SSH", severity: high}
+      "23": {service: "Telnet", severity: high}
+      "2375": {service: "Docker API (unencrypted)", severity: critical}
+      "2376": {service: "Docker API (TLS)", severity: high}
+      "2379": {service: "etcd client", severity: high}
+      "2380": {service: "etcd peer", severity: high}
+      "3306": {service: "MySQL/MariaDB", severity: high}
+      "5432": {service: "PostgreSQL", severity: high}
+      "6379": {service: "Redis", severity: high}
+      "9200": {service: "Elasticsearch", severity: high}
+      "11211": {service: "Memcached", severity: high}
+      "27017": {service: "MongoDB", severity: high}
+      "5984": {service: "CouchDB", severity: high}
+      "8500": {service: "Consul", severity: high}
+      "5900": {service: "VNC", severity: high}
+      "3389": {service: "RDP", severity: high}
 
   - id: exposed_port
     rule: exposed_port

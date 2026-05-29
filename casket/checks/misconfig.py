@@ -18,11 +18,28 @@ from casket.rules import load_ruleset
 _ROOT_USERS = {"", "root", "0", "0:0", "root:root"}
 
 
+def _port_number(port: str) -> str:
+    """Extract the bare port number from an ExposedPorts key.
+
+    ExposedPorts keys look like ``"22/tcp"``, ``"5432/udp"``, or sometimes a
+    bare ``"22"``. We key the sensitive-port map on the number alone so a port
+    matches regardless of its protocol suffix.
+    """
+    return str(port).split("/", 1)[0].strip()
+
+
 def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
     rules = load_ruleset("misconfig")
     cfg = image.config.get("config", {}) or {}
     layer_sha = image.config_descriptor_digest
     findings: list[Finding] = []
+
+    # Build the sensitive-port lookup once so the exposed_port handler can skip
+    # any port the sensitive_port rule already reports (no duplicate findings).
+    sensitive_rule = next((r for r in rules if r.get("kind") == "sensitive_port"), None)
+    sensitive_ports: dict[str, dict[str, Any]] = (
+        (sensitive_rule.get("ports") or {}) if sensitive_rule else {}
+    )
 
     for rule in rules:
         kind = rule.get("kind")
@@ -42,8 +59,33 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
                         },
                     )
                 )
+        elif kind == "sensitive_port":
+            for port in (cfg.get("ExposedPorts") or {}):
+                info = sensitive_ports.get(_port_number(port))
+                if info is None:
+                    continue
+                findings.append(
+                    Finding(
+                        category="misconfig",
+                        title=rule["title"],
+                        # Per-port severity from the rule's ports map; fall back
+                        # to high (sensitive ports are high-risk by definition).
+                        severity=str(info.get("severity", "high")),
+                        layer_sha=layer_sha,
+                        path_in_layer="<image config>",
+                        detail={
+                            "rule": rule["rule"],
+                            "port": port,
+                            "service": info.get("service", "unknown"),
+                        },
+                    )
+                )
         elif kind == "exposed_port":
             for port in (cfg.get("ExposedPorts") or {}):
+                # A sensitive port is reported by the sensitive_port rule above;
+                # don't also emit a generic low-severity finding for it.
+                if _port_number(port) in sensitive_ports:
+                    continue
                 findings.append(
                     Finding(
                         category="misconfig",

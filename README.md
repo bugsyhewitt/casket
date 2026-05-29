@@ -9,7 +9,9 @@
   SendGrid, npm, GCP, Twilio, …), JWTs, private keys, and high-entropy secrets
 - **known-vulnerable packages** — PyPI, Debian, Alpine, and RPM (RHEL/Fedora)
   packages resolved against [OSV.dev](https://osv.dev)
-- **misconfigurations** — `USER root`, exposed ports, secret-like env vars
+- **misconfigurations** — `USER root`, exposed ports (with sensitive service
+  ports — SSH, databases, unencrypted Docker API — flagged at higher severity),
+  secret-like env vars
 
 It reads images three ways:
 
@@ -368,6 +370,62 @@ service-account key is `critical`; a Twilio SID, which is lower-confidence, is
 format and emits a redacted 8-character prefix for triage — never the full
 secret. Rules live in `casket/ruledata/creds.yaml`; adding a pattern is a
 one-line YAML edit.
+
+## Misconfiguration coverage
+
+The misconfig check inspects the image *config* (the merged Dockerfile-equivalent
+settings) rather than layer file contents:
+
+| check | what it flags | severity |
+|---|---|---|
+| `running_as_root` | `config.User` empty or `root`/`0` | high |
+| `sensitive_port` | a well-known sensitive service port is exposed | per-port (see below) |
+| `exposed_port` | any other network port is exposed | low |
+| `suspicious_env_var` | an env var *name* matches a secret-ish pattern | medium |
+
+### Sensitive service ports
+
+A container exposing SSH or a database is a materially different risk than one
+exposing an application port. `casket` recognizes a curated set of well-known
+sensitive service ports and flags them at higher severity than a generic
+`EXPOSE`, surfacing the **service name** on the finding (`service` field) so an
+operator can triage without looking the port up:
+
+| port(s) | service | severity |
+|---|---|---|
+| 2375 | Docker API (unencrypted) | critical |
+| 22 | SSH | high |
+| 23 | Telnet | high |
+| 2376 | Docker API (TLS) | high |
+| 2379 / 2380 | etcd (client / peer) | high |
+| 3306 | MySQL/MariaDB | high |
+| 5432 | PostgreSQL | high |
+| 6379 | Redis | high |
+| 9200 | Elasticsearch | high |
+| 11211 | Memcached | high |
+| 27017 | MongoDB | high |
+| 5984 | CouchDB | high |
+| 8500 | Consul | high |
+| 5900 | VNC | high |
+| 3389 | RDP | high |
+
+Matching is on the port *number*, regardless of the `/tcp` or `/udp` suffix in
+`config.ExposedPorts`. A sensitive port produces a **single** higher-signal
+finding — it is not also reported by the generic `exposed_port` rule, so there
+are no duplicate findings. Every other exposed port still falls through to the
+generic `exposed_port` rule at `low` severity. The list lives in
+`casket/ruledata/misconfig.yaml` and is a one-line YAML edit to extend.
+
+```json
+{
+  "category": "misconfig",
+  "title": "Image exposes a sensitive service port",
+  "severity": "high",
+  "rule": "sensitive_port",
+  "port": "5432/tcp",
+  "service": "PostgreSQL"
+}
+```
 
 ## How CVE lookups stay polite
 

@@ -747,6 +747,51 @@ rate-limit/auth concerns), no scope creep, and no architecture change. It also
 *reuses* the severity-accuracy work — a re-scored CVE showing up as `changed` is
 only meaningful because the scores are now correct.
 
+### Item 17 — Sensitive service-port misconfiguration classification
+
+**Priority: HIGH. ✅ IMPLEMENTED (Phase 2, Rotation 20).**
+
+**The gap.** The misconfig check was the suite's least-developed surface — three
+rule kinds (`running_as_root`, `exposed_port`, `suspicious_env`) against the rich
+credential (19+ patterns) and CVE (4 ecosystems, full CVSS v2/v3/v4 scoring)
+coverage. In particular, `exposed_port` treated *every* exposed port identically
+at `low` severity: an image exposing SSH (22), a database (5432/3306/6379/27017),
+or — worst — the unencrypted Docker API (2375) was reported no differently from
+one exposing an app port (8080). Real scanners (Trivy, dockle, Hadolint) flag
+sensitive service ports distinctly; casket buried them in the low-severity noise,
+which both undersold genuine risk and (via the Rotation 9–16 severity arc)
+defeated the `--fail-on` gate, the `--min-severity` filter, and the SARIF
+`security-severity` sort for exactly the ports that matter most.
+
+**What shipped.** A new `kind: sensitive_port` misconfig rule carrying a curated
+`port → {service, severity}` map (SSH, Telnet, Docker API encrypted/unencrypted,
+etcd, MySQL/PostgreSQL/Redis/Mongo/Elasticsearch/Memcached/CouchDB, Consul, VNC,
+RDP). A matched port produces a **single** higher-signal finding at its per-port
+severity (Docker-API-unencrypted = `critical`, the rest `high`) with the service
+name on `detail["service"]` for triage. `misconfig.run()` builds the sensitive
+map once and the generic `exposed_port` handler **skips any port the sensitive
+rule already reports**, so each exposed port yields exactly one finding — no
+duplicates. Matching is on the bare port number (`_port_number()` strips the
+`/tcp`/`/udp` suffix), so `"22/tcp"` and `"22"` both match. The `service` field
+flows through all three output formats for free (json flatten / h1md bullet /
+sarif properties + message extras). Zero new dependencies (stdlib + existing
+yaml). Covered by 3 new tests in `tests/test_checks.py` (service classification
+incl. the critical Docker-API port, benign-port fall-through to the generic rule,
+no-duplicate guarantee) against a new `ports-image` fixture (non-root user
+exposing 8080/5432/2375), plus the existing `rootuser-image` SSH-port test
+retargeted from `exposed_port` to `sensitive_port` and the two `--min-severity`
+e2e tests retargeted to the image's new high/medium severity span. README gains a
+dedicated "Misconfiguration coverage" section with the full sensitive-port table.
+
+**Why this was the pick.** POST_V01 Items 1–16 (plus #18 OSV reference/alias
+enrichment) were all already shipped per the codebase, so this was a fresh gap
+analysis: the misconfig check was the weakest, lowest-coverage surface, and
+sensitive-port classification is a high-signal, low-complexity, zero-dependency
+win that *reuses* the entire Rotation 9–16 severity-accuracy investment (the
+`--fail-on` gate, `--min-severity`, and SARIF sort now treat an exposed database
+or unencrypted Docker socket as the high/critical risk it is, not low noise). No
+scope creep, no architecture change, no new data source.
+
 ### Candidate next items (not yet done)
 
 - **GHSA / NVD reference enrichment** — cross-link CVE findings to GHSA

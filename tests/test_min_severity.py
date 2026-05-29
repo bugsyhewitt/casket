@@ -135,9 +135,10 @@ def test_help_lists_min_severity(capsys):
 
 # ---- CLI e2e: filtering against a real fixture ----------------------------
 #
-# rootuser-image declares USER root (high running_as_root) AND exposes 22/tcp
-# (low exposed_port), so its misconfig set spans two severities — ideal for
-# proving the filter both keeps and drops.
+# rootuser-image declares USER root (high running_as_root), exposes 22/tcp
+# (high sensitive_port SSH), and bakes in API_TOKEN (medium suspicious_env), so
+# its misconfig set spans two severities — ideal for proving the filter both
+# keeps and drops.
 
 def test_e2e_min_severity_all_reports_both_severities(capsys):
     rc = main([
@@ -148,7 +149,7 @@ def test_e2e_min_severity_all_reports_both_severities(capsys):
     ])
     payload = json.loads(capsys.readouterr().out)
     severities = {f["severity"] for f in payload["findings"]}
-    assert {"high", "low"} <= severities  # both present without filtering
+    assert {"high", "medium"} <= severities  # both present without filtering
     assert rc == 1
 
 
@@ -163,7 +164,7 @@ def test_e2e_min_severity_high_drops_low_findings(capsys):
     payload = json.loads(capsys.readouterr().out)
     severities = {f["severity"] for f in payload["findings"]}
     assert "high" in severities  # the root finding survives
-    assert "low" not in severities  # the exposed-port finding is suppressed
+    assert "medium" not in severities  # the suspicious-env finding is suppressed
     # finding_count reflects the filtered report, not the pre-filter total
     assert payload["finding_count"] == len(payload["findings"])
     assert rc == 1  # a high finding remains, so the gate still trips
