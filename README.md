@@ -70,6 +70,7 @@ casket --image REF
        [--compare BASELINE.json]
        [--group-by-package]
        [--stats]
+       [--output-json-summary]
        [--offline]
        [--token TOKEN]
        [--registry-user USER] [--registry-password PASS]
@@ -467,6 +468,72 @@ This is a count of the partial package inventory casket already reads while
 scanning — it does **not** generate an SBOM (CycloneDX/SPDX), stays inside the
 daemonless / no-SBOM-generation architecture, and adds **zero** network calls
 (the inventory is extracted from layer files; `--stats` works fully `--offline`).
+
+### Dashboard / metric output with `--output-json-summary`
+
+`--format json` is the canonical per-finding report — the right shape for
+triage, `--compare` diffing, and SARIF / h1md rendering. But on a CI dashboard
+or a per-build metrics pipeline you usually want a single compact object with
+counts and a small top-N preview, not the full findings list.
+`--output-json-summary` emits exactly that:
+
+```bash
+casket --image ./myapp.tar --checks all --output-json-summary
+```
+
+```json
+{
+  "tool": "casket",
+  "version": "0.1.0",
+  "image": "./myapp.tar",
+  "finding_count": 17,
+  "by_severity": { "critical": 1, "high": 4, "medium": 8, "low": 4 },
+  "by_category": { "cve": 14, "creds": 2, "misconfig": 1 },
+  "by_ecosystem": { "Debian": 12, "PyPI": 2 },
+  "top_cves": [
+    {
+      "severity": "critical",
+      "cve_id": "CVE-2024-0001",
+      "package": "openssl",
+      "installed_version": "3.0.7-1",
+      "ecosystem": "Debian",
+      "epss_score": 0.92,
+      "cvss_score": 9.8
+    }
+  ]
+}
+```
+
+The summary is a sibling output mode to `--format json`, not a replacement:
+
+- It carries **counts**, **histograms**, and a **top-10 CVE preview** ordered
+  worst-severity-first (then EPSS-desc, then CVE id). It deliberately omits
+  the full per-finding `detail` blob, layer attribution, CVSS vectors, and fix
+  URLs — those live in the full `--format json` report.
+- When `--stats` is also set, the inventory counts (`total_components`,
+  `vulnerable_components`, `components_by_ecosystem`) are surfaced as
+  first-class top-level keys for one-line `jq` access.
+- It honours every report filter (`--min-severity`, `--min-epss`, `--vex`,
+  `--suppress-ecosystem`, `--suppress-severity`), so the summary reflects what
+  the full report would show — what fails the build matches what the dashboard
+  sees.
+- It honours the `--fail-on` exit-code gate, so the build outcome stays
+  consistent across the two output modes.
+- `--format` is ignored: the summary is JSON-only by design (a dashboard reads
+  JSON).
+- Mutually exclusive with `--compare` (different output modes; combining them
+  surfaces a clean exit-2 error rather than silently letting one win).
+
+Typical CI use:
+
+```bash
+# fail the build on critical+, but also publish the summary for the dashboard
+casket --image ./img.tar --checks all --fail-on critical --output-json-summary \
+  | tee scan-summary.json \
+  | jq '.by_severity.critical + .by_severity.high'
+```
+
+Omitting the flag keeps the full findings report (default).
 
 ### Grouping CVE findings by package with `--group-by-package`
 

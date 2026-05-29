@@ -23,6 +23,7 @@ from casket.compare import (
     render_diff_json,
 )
 from casket.findings import render, report_dict
+from casket.summary import build_summary, render_summary_json
 from casket.scanner import (
     FAIL_ON_CHOICES,
     MIN_SEVERITY_CHOICES,
@@ -267,6 +268,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--output-json-summary",
+        action="store_true",
+        help=(
+            "emit a compact, machine-readable JSON summary instead of the full "
+            "findings report — sized for CI dashboards and per-build metrics "
+            "pipelines. The summary carries finding counts (total, by severity, "
+            "by category, by CVE ecosystem), the component-count inventory when "
+            "--stats is set, and a top-10 CVE preview (worst severity first, "
+            "then by EPSS) — but NOT the full per-finding detail, so it is not a "
+            "replacement for --format json and cannot be consumed by --compare. "
+            "Honours every report filter (--min-severity, --min-epss, --vex, "
+            "--suppress-ecosystem, --suppress-severity) and the --fail-on exit "
+            "code, so the summary reflects what the full report would show. "
+            "Mutually exclusive with --compare."
+        ),
+    )
+    parser.add_argument(
         "--compare",
         metavar="BASELINE.json",
         help=(
@@ -310,6 +328,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # --output-json-summary and --compare are different output modes (summary
+    # emits a compact dashboard object; compare emits a finding-diff document)
+    # and consume the report differently. Combining them is meaningless —
+    # surface the conflict cleanly rather than silently letting one win.
+    if args.output_json_summary and args.compare:
+        print(
+            "casket: --output-json-summary and --compare are mutually exclusive",
+            file=sys.stderr,
+        )
+        return 2
 
     osv_client = None
     epss_client = None
@@ -425,6 +454,17 @@ def main(argv: list[str] | None = None) -> int:
     # operator sees. Network-free (reuses the inventory the CVE check extracts);
     # None when the flag is absent, leaving the report shape unchanged.
     scan_stats = component_stats(image, findings) if args.stats else None
+
+    if args.output_json_summary:
+        # Dashboard / metric-aggregation output mode. Emits a compact summary
+        # object instead of the full findings report, using the same filtered
+        # set so the dashboard sees what the full report would. --fail-on
+        # still gates the exit code on the same set (build outcome stays
+        # consistent across output modes); --format is ignored here (the
+        # summary is JSON-only by design — a dashboard reads JSON).
+        summary = build_summary(findings, image=args.image, scan_stats=scan_stats)
+        print(render_summary_json(summary))
+        return exit_code(findings, args.fail_on)
 
     if args.compare:
         # Diff mode: compare this scan against a previous casket JSON report and
