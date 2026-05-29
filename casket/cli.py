@@ -64,6 +64,28 @@ def _epss_threshold(value: str) -> float:
     return f
 
 
+def _vex_max_age(value: str) -> int:
+    """argparse type for --vex-max-age: a strictly-positive whole number of days.
+
+    The flag expresses a re-triage window, so a zero or negative window is
+    meaningless (and ``0`` would expire *every* suppression, including
+    timestamped-today ones — a silent footgun). Non-integers and non-positive
+    values are rejected with a clean argparse error.
+    """
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"invalid --vex-max-age {value!r}: expected a positive integer "
+            "number of days"
+        )
+    if days <= 0:
+        raise argparse.ArgumentTypeError(
+            f"--vex-max-age must be a positive number of days, got {days}"
+        )
+    return days
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="casket",
@@ -157,6 +179,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--vex-max-age",
+        type=_vex_max_age,
+        default=None,
+        metavar="DAYS",
+        help=(
+            "expire VEX suppressions older than DAYS days, forcing re-triage. "
+            "A --vex statement whose OpenVEX timestamp is older than this "
+            "window (or that carries no timestamp at all) is treated as "
+            "expired, so the CVE it waived re-surfaces in the report and the "
+            "exit-code gate. Requires --vex; without it this flag is inert. "
+            "Omitting it keeps every suppression forever (default)."
+        ),
+    )
+    parser.add_argument(
         "--compare",
         metavar="BASELINE.json",
         help=(
@@ -243,16 +279,28 @@ def main(argv: list[str] | None = None) -> int:
     # fails fast with a clean exit 2 rather than after a full image scan.
     vex_suppressed: set[str] | None = None
     if args.vex:
-        from casket.vex import VEXError, load_vex
+        from casket.vex import (
+            VEXError,
+            effective_suppression_set,
+            load_vex_statements,
+        )
 
         try:
-            vex_suppressed = load_vex(args.vex)
+            vex_statements = load_vex_statements(args.vex)
         except FileNotFoundError:
             print(f"casket: VEX file not found: {args.vex}", file=sys.stderr)
             return 2
         except (VEXError, OSError) as exc:
             print(f"casket: failed to read VEX file: {exc}", file=sys.stderr)
             return 2
+        # --vex-max-age (when set) expires suppressions older than the window so
+        # stale triage doesn't silently hide a CVE forever. Absent, every
+        # suppression stays live regardless of its timestamp (original
+        # behaviour). A suppression with no parseable timestamp is treated as
+        # expired under a window — it can't be proven inside the review horizon.
+        vex_suppressed = effective_suppression_set(
+            vex_statements, args.vex_max_age
+        )
 
     findings = run_checks(
         image, selected, osv_client=osv_client, epss_client=epss_client

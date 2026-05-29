@@ -64,7 +64,7 @@ casket --image REF
        [--fail-on {any,critical,high,medium,low,info,none}]
        [--min-severity {all,critical,high,medium,low,info}]
        [--min-epss PROBABILITY]
-       [--vex VEX.json]
+       [--vex VEX.json] [--vex-max-age DAYS]
        [--compare BASELINE.json]
        [--offline]
        [--token TOKEN]
@@ -249,6 +249,48 @@ A minimal VEX document:
 - A missing or malformed VEX file is a clean exit `2` (with a one-line stderr
   message), never a traceback. Individual malformed statements are skipped so a
   single bad row doesn't void an otherwise-usable file.
+
+#### Expiring stale triage with `--vex-max-age`
+
+A triage decision is a point-in-time judgement. A CVE waived as `not_affected`
+six months ago may have become reachable since — a new base layer, a new
+dependency, a freshly-disclosed exploit chain. A suppression that lives forever
+silently is a stale-triage hazard: the operator stops seeing the CVE and forgets
+it was ever waived. OpenVEX statements carry a `timestamp` (and the document
+carries one its statements inherit); `--vex-max-age DAYS` uses it to enforce a
+re-triage window.
+
+```bash
+# suppressions older than 90 days expire — the CVE re-surfaces, forcing review
+casket --image ./myapp.tar --checks cves --vex ./vex.json --vex-max-age 90
+```
+
+A timestamped statement:
+
+```json
+{
+  "statements": [
+    {
+      "vulnerability": { "name": "CVE-2018-18074" },
+      "status": "not_affected",
+      "timestamp": "2026-01-15T00:00:00Z"
+    }
+  ]
+}
+```
+
+- With `--vex-max-age N`, a suppressing statement whose `timestamp` is **more
+  than N days** before now is treated as **expired**: the CVE it waived
+  re-surfaces in the report and (re-)trips the `--fail-on` gate. A statement
+  exactly at the window edge is still live.
+- A suppression that carries **no timestamp** (neither on the statement nor on
+  the document) can't be proven inside the window, so under `--vex-max-age` it
+  is treated as expired too. Date your waivers if you want them to survive a
+  window.
+- The flag requires `--vex`; on its own it is inert (there are no suppressions
+  to expire). It takes a positive whole number of days.
+- Omit the flag (the default) to keep every suppression forever regardless of
+  its timestamp — the original `--vex` behaviour is unchanged.
 
 ### Diffing two scans with `--compare`
 

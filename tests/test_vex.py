@@ -21,10 +21,19 @@ import json
 
 import pytest
 
+from datetime import datetime, timezone
+
 from casket.cli import build_parser, main
 from casket.findings import Finding
 from casket.scanner import filter_by_vex
-from casket.vex import VEXError, load_vex, parse_vex
+from casket.vex import (
+    VEXError,
+    effective_suppression_set,
+    load_vex,
+    load_vex_statements,
+    parse_vex,
+    parse_vex_statements,
+)
 from tests.conftest import fixture_path
 
 
@@ -358,3 +367,378 @@ def test_e2e_vex_matches_on_alias(capsys, _isolate_osv_cache, tmp_path):
     payload = json.loads(capsys.readouterr().out)
     assert not [f for f in payload["findings"] if f["category"] == "cve"]
     assert rc == 0
+
+
+# --- parse_vex_statements: id + timestamp pairs ----------------------------
+#
+# Time-bounded expiry needs each suppressing statement's timestamp, not just
+# its id. parse_vex_statements returns (id, timestamp) pairs; parse_vex stays a
+# thin no-expiry wrapper over it (the existing set[str] contract is unchanged).
+
+
+def test_parse_statements_captures_statement_timestamp():
+    doc = json.dumps(
+        {
+            "statements": [
+                {
+                    "vulnerability": {"name": "CVE-1"},
+                    "status": "not_affected",
+                    "timestamp": "2024-01-01T00:00:00Z",
+                }
+            ]
+        }
+    )
+    stmts = parse_vex_statements(doc)
+    assert len(stmts) == 1
+    assert stmts[0].vuln_id == "CVE-1"
+    assert stmts[0].timestamp == datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+
+def test_parse_statements_inherits_document_timestamp():
+    # OpenVEX: a statement with no timestamp inherits the document timestamp.
+    doc = json.dumps(
+        {
+            "timestamp": "2023-06-15T12:00:00Z",
+            "statements": [
+                {"vulnerability": "CVE-1", "status": "fixed"},
+            ],
+        }
+    )
+    stmts = parse_vex_statements(doc)
+    assert stmts[0].timestamp == datetime(
+        2023, 6, 15, 12, 0, tzinfo=timezone.utc
+    )
+
+
+def test_parse_statements_timestamp_none_when_absent_everywhere():
+    doc = json.dumps(
+        {"statements": [{"vulnerability": "CVE-1", "status": "fixed"}]}
+    )
+    assert parse_vex_statements(doc)[0].timestamp is None
+
+
+def test_parse_statements_statement_timestamp_overrides_document():
+    doc = json.dumps(
+        {
+            "timestamp": "2020-01-01T00:00:00Z",
+            "statements": [
+                {
+                    "vulnerability": "CVE-1",
+                    "status": "fixed",
+                    "timestamp": "2025-01-01T00:00:00Z",
+                }
+            ],
+        }
+    )
+    assert parse_vex_statements(doc)[0].timestamp == datetime(
+        2025, 1, 1, tzinfo=timezone.utc
+    )
+
+
+def test_parse_statements_bad_timestamp_is_none_not_fatal():
+    # A malformed timestamp must not crash the scan; the statement still
+    # suppresses (timestamp None == "never expires"), matching fail-safe-quiet.
+    doc = json.dumps(
+        {
+            "statements": [
+                {
+                    "vulnerability": "CVE-1",
+                    "status": "fixed",
+                    "timestamp": "not-a-date",
+                }
+            ]
+        }
+    )
+    stmts = parse_vex_statements(doc)
+    assert stmts[0].vuln_id == "CVE-1"
+    assert stmts[0].timestamp is None
+
+
+def test_parse_statements_naive_timestamp_treated_as_utc():
+    doc = json.dumps(
+        {
+            "statements": [
+                {
+                    "vulnerability": "CVE-1",
+                    "status": "fixed",
+                    "timestamp": "2024-01-01T00:00:00",
+                }
+            ]
+        }
+    )
+    assert parse_vex_statements(doc)[0].timestamp == datetime(
+        2024, 1, 1, tzinfo=timezone.utc
+    )
+
+
+def test_parse_set_wrapper_matches_statements():
+    # parse_vex is the no-expiry wrapper: same ids parse_vex_statements yields.
+    doc = json.dumps(
+        {
+            "statements": [
+                {"vulnerability": "CVE-1", "status": "not_affected"},
+                {"vulnerability": "CVE-2", "status": "fixed"},
+                {"vulnerability": "CVE-3", "status": "affected"},
+            ]
+        }
+    )
+    assert parse_vex(doc) == {s.vuln_id for s in parse_vex_statements(doc)}
+
+
+# --- effective_suppression_set: apply the age window -----------------------
+
+
+_NOW = datetime(2024, 1, 31, tzinfo=timezone.utc)
+
+
+def _stmts(doc_dict):
+    return parse_vex_statements(json.dumps(doc_dict))
+
+
+def test_effective_no_max_age_keeps_everything():
+    stmts = _stmts(
+        {
+            "statements": [
+                {
+                    "vulnerability": "CVE-old",
+                    "status": "fixed",
+                    "timestamp": "2000-01-01T00:00:00Z",
+                },
+                {"vulnerability": "CVE-undated", "status": "fixed"},
+            ]
+        }
+    )
+    # max_age_days=None -> the no-expiry path: every suppressing id survives.
+    assert effective_suppression_set(stmts, None, now=_NOW) == {
+        "CVE-old",
+        "CVE-undated",
+    }
+
+
+def test_effective_drops_expired_statement():
+    stmts = _stmts(
+        {
+            "statements": [
+                {
+                    "vulnerability": "CVE-fresh",
+                    "status": "fixed",
+                    "timestamp": "2024-01-20T00:00:00Z",  # 11 days old
+                },
+                {
+                    "vulnerability": "CVE-stale",
+                    "status": "fixed",
+                    "timestamp": "2024-01-01T00:00:00Z",  # 30 days old
+                },
+            ]
+        }
+    )
+    # window = 14 days: fresh survives, stale expires (re-surfaces).
+    assert effective_suppression_set(stmts, 14, now=_NOW) == {"CVE-fresh"}
+
+
+def test_effective_boundary_exactly_at_window_still_suppresses():
+    stmts = _stmts(
+        {
+            "statements": [
+                {
+                    "vulnerability": "CVE-edge",
+                    "status": "fixed",
+                    "timestamp": "2024-01-17T00:00:00Z",  # exactly 14 days
+                }
+            ]
+        }
+    )
+    # age == window is NOT yet expired (expiry is strictly older-than).
+    assert effective_suppression_set(stmts, 14, now=_NOW) == {"CVE-edge"}
+
+
+def test_effective_undated_statement_expires_under_a_window():
+    # With an age window in force, a suppression that carries no timestamp can't
+    # be proven fresh, so it is treated as expired (re-triage is forced). This
+    # is the safety posture: an unbounded, undated suppression should not
+    # silently outlive the operator's chosen review window.
+    stmts = _stmts(
+        {"statements": [{"vulnerability": "CVE-undated", "status": "fixed"}]}
+    )
+    assert effective_suppression_set(stmts, 14, now=_NOW) == set()
+
+
+def test_effective_future_timestamp_is_fresh():
+    stmts = _stmts(
+        {
+            "statements": [
+                {
+                    "vulnerability": "CVE-future",
+                    "status": "fixed",
+                    "timestamp": "2099-01-01T00:00:00Z",
+                }
+            ]
+        }
+    )
+    assert effective_suppression_set(stmts, 14, now=_NOW) == {"CVE-future"}
+
+
+def test_load_vex_statements_reads_file(tmp_path):
+    p = tmp_path / "vex.json"
+    p.write_text(
+        json.dumps(
+            {
+                "statements": [
+                    {
+                        "vulnerability": "CVE-7",
+                        "status": "fixed",
+                        "timestamp": "2024-01-01T00:00:00Z",
+                    }
+                ]
+            }
+        )
+    )
+    stmts = load_vex_statements(str(p))
+    assert stmts[0].vuln_id == "CVE-7"
+    assert stmts[0].timestamp == datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+
+# --- CLI wiring: --vex-max-age ---------------------------------------------
+
+
+def test_help_mentions_vex_max_age(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--help"])
+    assert "--vex-max-age" in capsys.readouterr().out
+
+
+def test_cli_vex_max_age_rejects_non_positive(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["--image", "x", "--vex", "v.json", "--vex-max-age", "0"]
+        )
+    assert "vex-max-age" in capsys.readouterr().err.lower()
+
+
+def test_cli_vex_max_age_rejects_non_integer(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["--image", "x", "--vex", "v.json", "--vex-max-age", "abc"]
+        )
+    err = capsys.readouterr().err.lower()
+    assert "vex-max-age" in err
+
+
+def test_e2e_expired_vex_statement_resurfaces_cve(
+    capsys, _isolate_osv_cache, tmp_path
+):
+    # A VEX statement older than --vex-max-age is treated as expired, so the CVE
+    # it suppressed re-surfaces and the gate trips again — forcing re-triage.
+    _seed_requests_cve(_isolate_osv_cache)
+    vex = tmp_path / "vex.json"
+    vex.write_text(
+        json.dumps(
+            {
+                "@context": "https://openvex.dev/ns/v0.2.0",
+                "statements": [
+                    {
+                        "vulnerability": {"name": "CVE-2018-18074"},
+                        "status": "not_affected",
+                        "timestamp": "2018-01-01T00:00:00Z",
+                    }
+                ],
+            }
+        )
+    )
+    rc = main(
+        [
+            "--image",
+            fixture_path("old-package.tar"),
+            "--mode",
+            "tarball",
+            "--checks",
+            "cves",
+            "--format",
+            "json",
+            "--offline",
+            "--vex",
+            str(vex),
+            "--vex-max-age",
+            "30",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert any(
+        f["cve_id"] == "CVE-2018-18074"
+        for f in payload["findings"]
+        if f["category"] == "cve"
+    )
+    assert rc == 1  # expired suppression -> finding back -> gate trips
+
+
+def test_e2e_fresh_vex_statement_still_suppresses_under_max_age(
+    capsys, _isolate_osv_cache, tmp_path, monkeypatch
+):
+    # A statement *within* the window keeps suppressing even when --vex-max-age
+    # is set. We pin "now" via a recent timestamp far inside a 3650-day window.
+    _seed_requests_cve(_isolate_osv_cache)
+    vex = tmp_path / "vex.json"
+    vex.write_text(
+        json.dumps(
+            {
+                "statements": [
+                    {
+                        "vulnerability": {"name": "CVE-2018-18074"},
+                        "status": "not_affected",
+                        "timestamp": "2099-01-01T00:00:00Z",
+                    }
+                ]
+            }
+        )
+    )
+    rc = main(
+        [
+            "--image",
+            fixture_path("old-package.tar"),
+            "--mode",
+            "tarball",
+            "--checks",
+            "cves",
+            "--format",
+            "json",
+            "--offline",
+            "--vex",
+            str(vex),
+            "--vex-max-age",
+            "30",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert not [f for f in payload["findings"] if f["category"] == "cve"]
+    assert rc == 0
+
+
+def test_e2e_max_age_without_vex_is_inert(capsys, _isolate_osv_cache):
+    # --vex-max-age with no --vex is a no-op (nothing to expire); the scan runs
+    # normally and the CVE is reported.
+    _seed_requests_cve(_isolate_osv_cache)
+    rc = main(
+        [
+            "--image",
+            fixture_path("old-package.tar"),
+            "--mode",
+            "tarball",
+            "--checks",
+            "cves",
+            "--format",
+            "json",
+            "--offline",
+            "--vex-max-age",
+            "30",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert any(
+        f["cve_id"] == "CVE-2018-18074"
+        for f in payload["findings"]
+        if f["category"] == "cve"
+    )
+    assert rc == 1
