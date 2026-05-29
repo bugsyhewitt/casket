@@ -68,6 +68,7 @@ casket --image REF
        [--vex VEX.json] [--vex-max-age DAYS]
        [--suppress-ecosystem ECOSYSTEM]
        [--compare BASELINE.json]
+       [--group-by-package]
        [--stats]
        [--offline]
        [--token TOKEN]
@@ -466,6 +467,53 @@ This is a count of the partial package inventory casket already reads while
 scanning — it does **not** generate an SBOM (CycloneDX/SPDX), stays inside the
 daemonless / no-SBOM-generation architecture, and adds **zero** network calls
 (the inventory is extracted from layer files; `--stats` works fully `--offline`).
+
+### Grouping CVE findings by package with `--group-by-package`
+
+A single ancient package can carry a dozen CVEs, and an h1md report
+that spells them out one section per CVE drowns the operator in
+repeated package/version headers. `--group-by-package` collapses every
+CVE finding that shares an installed `(package, installed_version)`
+into one section in h1md output:
+
+```bash
+casket --image ./myapp.tar --checks cves --format h1md --group-by-package
+```
+
+```markdown
+## Package: `openssl@3.0.0` [CRITICAL]
+
+- **layer:** `sha256:abc…`
+- **path:** `var/lib/dpkg/status`
+- **ecosystem:** `Debian:12`
+- **CVE count:** `3`
+
+- **[critical]** `CVE-2024-0002` — heap buffer overflow in TLS handshake
+- **[high]** `CVE-2024-0001` — use-after-free in X509 parser
+- **[low]** `CVE-2024-0003` — timing leak in HMAC compare
+```
+
+The section header surfaces the **worst** severity among the package's
+CVEs so triage order isn't lost; each bullet still shows its own
+severity band. Sections are emitted worst-package-first.
+
+Behaviour to know:
+
+- **h1md only.** `--format json` and `--format sarif` are byte-for-byte
+  unchanged with or without the flag — machine consumers (`--compare`,
+  GitHub code-scanning ingest) stay stable, and CI gates (`--fail-on`)
+  see the same finding set either way.
+- **Different installed versions stay separate.** Multi-stage builds
+  and overlay images can ship two copies of one package at different
+  versions; `openssl@3.0.0` and `openssl@1.1.1k` get their own
+  sections.
+- **Creds and misconfig findings render unchanged.** They carry no
+  `package` field and aren't a triage-by-package workflow, so they
+  keep their per-finding headers below the package sections.
+- A defensive CVE missing a `package` field falls back to the
+  per-finding layout (it isn't silently dropped).
+
+Omitting the flag keeps the per-finding section layout (default).
 
 ### tarball mode (no dependencies)
 

@@ -87,6 +87,7 @@ def render(
     *,
     image: str,
     scan_stats: dict[str, Any] | None = None,
+    group_by_package: bool = False,
 ) -> str:
     """Render findings in the requested format.
 
@@ -94,12 +95,26 @@ def render(
     a component-count summary to the output: a ``scan_stats`` object in json /
     sarif, and a **Components** section in h1md. Omitted entirely when ``None``,
     so the default output is byte-for-byte unchanged.
+
+    ``group_by_package`` (h1md only) collapses CVE findings that share an
+    (ecosystem, package, installed_version) into a single section, surfacing
+    the package's worst severity in the section header. A single vulnerable
+    package routinely produces 10+ CVE findings; this is a pure h1md
+    presentation change — json / sarif (machine consumers) are byte-for-byte
+    unchanged. Non-CVE findings (creds / misconfig) carry no package field and
+    render under their per-finding headers as before. A CVE finding missing a
+    ``package`` field defensively falls back to the per-finding layout.
     """
     ordered = sorted(findings, key=_severity_key)
     if fmt == "json":
         return _render_json(ordered, image=image, scan_stats=scan_stats)
     if fmt == "h1md":
-        return _render_h1md(ordered, image=image, scan_stats=scan_stats)
+        return _render_h1md(
+            ordered,
+            image=image,
+            scan_stats=scan_stats,
+            group_by_package=group_by_package,
+        )
     if fmt == "sarif":
         return _render_sarif(ordered, image=image, scan_stats=scan_stats)
     raise ValueError(f"unknown format: {fmt!r}")
@@ -151,6 +166,7 @@ def _render_h1md(
     *,
     image: str,
     scan_stats: dict[str, Any] | None = None,
+    group_by_package: bool = False,
 ) -> str:
     lines: list[str] = []
     lines.append(f"# casket scan report: `{image}`")
@@ -181,6 +197,37 @@ def _render_h1md(
         lines.append("_No findings._")
         return "\n".join(lines) + "\n"
 
+    # --group-by-package: collapse CVE findings that share an (ecosystem,
+    # package, version) into one section, leaving non-CVE findings (and CVE
+    # findings missing a package field) to render under their per-finding
+    # headers below.
+    if group_by_package:
+        groups, ungrouped = _group_cve_findings_by_package(findings)
+        for header, group_findings in groups:
+            lines.append(header)
+            lines.append("")
+            # Stable layer/path attribution from the first finding (all
+            # findings in a group share the same installed package, so the
+            # layer that introduced the package is identical across them).
+            first = group_findings[0]
+            lines.append(f"- **layer:** `{first.layer_sha}`")
+            lines.append(f"- **path:** `{first.path_in_layer}`")
+            ecosystem = first.detail.get("ecosystem")
+            if ecosystem:
+                lines.append(f"- **ecosystem:** `{ecosystem}`")
+            lines.append(f"- **CVE count:** `{len(group_findings)}`")
+            lines.append("")
+            for f in group_findings:
+                cve_id = f.detail.get("cve_id", f.title)
+                bullet = f"- **[{f.severity}]** `{cve_id}`"
+                summary = f.detail.get("summary")
+                if summary:
+                    bullet += f" — {summary}"
+                lines.append(bullet)
+            lines.append("")
+        # Fall through to per-finding rendering for the ungrouped tail.
+        findings = ungrouped
+
     for f in findings:
         lines.append(f"## [{f.severity.upper()}] {f.title}")
         lines.append("")
@@ -191,6 +238,65 @@ def _render_h1md(
             lines.append(f"- **{key}:** `{value}`")
         lines.append("")
     return "\n".join(lines) + "\n"
+
+
+def _group_cve_findings_by_package(
+    findings: list[Finding],
+) -> tuple[list[tuple[str, list[Finding]]], list[Finding]]:
+    """Partition findings into (cve groups by package, ungrouped tail).
+
+    Groups are keyed by ``(package, installed_version)`` — distinct installed
+    versions of the same package (common in overlay images / multi-stage
+    builds) stay separate. Each group is ordered by ``_severity_key`` so the
+    worst CVE bullets sort first. Groups themselves are emitted in
+    worst-severity-first order so an operator triages the most dangerous
+    package first.
+
+    A CVE finding missing a ``package`` field defensively flows to the
+    ungrouped tail (rendered under a per-finding header by the caller), so
+    a malformed or stripped-down CVE entry never silently disappears.
+    """
+    grouped: dict[tuple[str, str], list[Finding]] = {}
+    group_order: list[tuple[str, str]] = []
+    ungrouped: list[Finding] = []
+
+    for f in findings:
+        if f.category != "cve":
+            ungrouped.append(f)
+            continue
+        package = f.detail.get("package")
+        version = f.detail.get("installed_version", "")
+        if not package:
+            ungrouped.append(f)
+            continue
+        key = (package, version)
+        if key not in grouped:
+            grouped[key] = []
+            group_order.append(key)
+        grouped[key].append(f)
+
+    sections: list[tuple[str, list[Finding]]] = []
+    for key in group_order:
+        package, version = key
+        group_findings = sorted(grouped[key], key=_severity_key)
+        worst_rank = min(
+            _SEVERITY_RANK.get(f.severity, 99) for f in group_findings
+        )
+        worst = next(
+            sev for sev, rank in _SEVERITY_RANK.items() if rank == worst_rank
+        )
+        suffix = f"@{version}" if version else ""
+        header = f"## Package: `{package}{suffix}` [{worst.upper()}]"
+        sections.append((header, group_findings))
+
+    # Sort sections worst-severity-first; preserve relative order within a
+    # severity band by leaning on Python's stable sort.
+    def _section_key(item: tuple[str, list[Finding]]) -> int:
+        _, group_findings = item
+        return min(_SEVERITY_RANK.get(f.severity, 99) for f in group_findings)
+
+    sections.sort(key=_section_key)
+    return sections, ungrouped
 
 
 def _sarif_rule_id(finding: Finding) -> str:
