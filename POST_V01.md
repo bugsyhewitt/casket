@@ -562,16 +562,72 @@ High operator value, low complexity, zero new dependencies, no scope creep, no
 architecture change — and the CVSS v4 alternative remains a larger table-driven
 standalone effort better suited to its own rotation.
 
+### Item 14 — CVSS v4.0 vector scoring
+
+**Priority: HIGH. ✅ IMPLEMENTED (Phase 2, Rotation 16).**
+
+**The gap.** Rotations 13/14 scored CVSS v3.x and legacy v2 vectors, but v4.0
+(`CVSS:4.0/…`) still fell through to `database_specific.severity` and, failing
+that, the conservative `"high"` default. v4.0 is the current standard and is
+increasingly what OSV records for newly-published CVEs — so the most recent,
+often most-relevant findings on a freshly-built image were the ones whose
+severity defaulted. That degraded the same three downstream consumers the v2/v3
+work targeted: the `--fail-on` gate, the SARIF `security-severity` sort, and
+(new in Rotation 15) the `--min-severity` report filter. v4 was the last
+unscored CVSS family.
+
+**What shipped.** `casket/checks/cves.py` now scores CVSS v4.0 vectors.
+v4.0's base score is **not** a closed-form formula: it is a MacroVector lookup
+plus severity-distance interpolation (FIRST CVSS v4.0 spec, section 8.2). The
+implementation is a faithful, stdlib-only port of the FIRST/Red Hat reference
+calculator: `_cvss4_macrovector()` reduces the vector to the 6-digit
+equivalence-class MacroVector (the exact EQ1–EQ6 partition rules), `_CVSS4_LOOKUP`
+holds the official 270-entry reference score table, and `_cvss4_base_score()`
+interpolates within the MacroVector by measuring the severity distance from the
+chosen most-severe corner (the `max_composed` vectors) and proportioning it
+against the score gap to the next-lower MacroVector. Threat / Environmental /
+Supplemental metrics (E, CR/IR/AR, modified base metrics) are honoured with the
+spec's score-neutral defaults, so a base-only vector — what OSV typically
+records — scores correctly, and a richer vector still scores. The
+no-impact shortcut (all of VC/VI/VA/SC/SI/SA = N → 0.0) is implemented. Scores
+map through the *same* unified `_cvss_score_to_severity` band as v2/v3, so every
+finding speaks one severity vocabulary. Resolution order in `_severity_from_osv`
+is unchanged: (1) standard CVSS array (now v4 + v3 + v2), (2)
+`database_specific.severity`, (3) `"high"`. A malformed/unscorable v4 vector
+(missing base metric, unrecognised value) degrades gracefully to the next
+source — never a crash. Zero new dependencies.
+
+**Validation.** The port was checked **bit-for-bit against the FIRST reference
+JavaScript calculator** across the entire base-metric space (12 000 vectors,
+including ones carrying E/CR/IR/AR) — zero mismatches — to confirm the
+MacroVector reduction, lookup table, interpolation, and the reference's
+half-up rounding all agree. Covered by 13 new tests in `tests/test_checks.py`
+(reference-corner scores, the no-impact-zero shortcut, mid-vector interpolation,
+threat/environmental shift, missing-metric/invalid-value → None, MacroVector
+reduction, unified-band mapping, the array-beats-`database_specific`
+precedence, the malformed-v4 fallback, the standard-array read, and an E2E
+proving a finding's severity derives from a seeded 9.3 v4 vector rather than the
+old default). The pre-existing `..._v4_unscored` test was retargeted to assert
+v4 *is* now scored, and `..._falls_back_to_database_specific_for_v4_vector` was
+retargeted to a malformed v4 vector (the genuinely-unscorable case now that
+well-formed v4 scores).
+
+**Why this was the pick.** Same correctness-fix rationale as Rotations 13/14,
+one version newer — and the newest: v4.0 is what OSV increasingly records for
+current CVEs, so this tightens severity accuracy on the *freshest* findings at
+the exact point three shipped features (`--fail-on`, SARIF `security-severity`,
+`--min-severity`) consume. It closes the last unscored CVSS family. High value,
+zero new dependencies, no scope creep, no architecture change.
+
 ### Candidate next items (not yet done)
 
 - **Alpine `edge` handling** — `etc/alpine-release` on edge images is non-numeric;
   OSV has no `Alpine:edge`. Currently falls back to bare `Alpine` (fine, but
   could log a note).
-- **CVSS v4 vector scoring** — Rotation 13/14 score v3.x and v2 vectors;
-  v4 (`CVSS:4.0/…`) still falls through to `database_specific.severity`. v4's
-  base score is table-driven (a ~270-entry MacroVector lookup with
-  interpolation), not a closed-form formula, so a faithful stdlib
-  implementation is a larger, standalone change.
+- **CVSS v4.0 supplemental-metric surfacing** — v4.0 base scores are now
+  computed; the supplemental metrics (Safety, Automatable, Recovery, …) are
+  parsed-and-ignored for scoring (correct, they don't affect the base score) but
+  could be surfaced in finding detail for operator triage.
 
 ---
 

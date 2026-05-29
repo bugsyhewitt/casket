@@ -302,20 +302,24 @@ silently (no finding, no crash). RPM versions are matched as full EVR strings
 
 Each CVE finding's severity is derived from the matched OSV record's standard
 `severity` array — the CVSS vector OSV.dev records for the vast majority of
-vulnerabilities. `casket` parses both CVSS **v3.x** and legacy CVSS **v2**
+vulnerabilities. `casket` parses CVSS **v4.0**, **v3.x**, and legacy CVSS **v2**
 vectors, computes the base score with a small standard-library calculator (no
 new dependency), and maps it to a qualitative band on the CVSS v3.1 scale
 (`9.0–10.0` critical, `7.0–8.9` high, `4.0–6.9` medium, `0.1–3.9` low, `0.0`
 info). Legacy v2 vectors are common on the older packages a container scanner
 routinely surfaces; they are scored faithfully to the v2 formula but mapped
-through the same unified band as v3 (so every finding speaks one severity
-vocabulary, including `critical`, which v2's native scale lacks). CVSS v4.0
-vectors are not yet scored (their base score is table-driven, not closed-form)
-and fall through to the next source. If a record carries no scorable CVSS
-vector, `casket` falls back to the record's `database_specific.severity`
-string, and finally to a conservative `high`. Accurate severities matter
-downstream: they drive the `--fail-on` CI gate and the SARIF `security-severity`
-score that GitHub code-scanning uses to sort and threshold findings.
+through the same unified band as v3/v4 (so every finding speaks one severity
+vocabulary, including `critical`, which v2's native scale lacks). CVSS v4.0's
+base score is not a closed-form formula — it is a MacroVector lookup plus
+severity-distance interpolation — so `casket` implements the
+[FIRST CVSS v4.0 algorithm](https://www.first.org/cvss/v4-0/specification-document)
+faithfully (validated bit-for-bit against the FIRST reference calculator across
+the full base-metric space). If a record carries no scorable CVSS vector,
+`casket` falls back to the record's `database_specific.severity` string, and
+finally to a conservative `high`. Accurate severities matter downstream: they
+drive the `--fail-on` CI gate, the `--min-severity` report filter, and the SARIF
+`security-severity` score that GitHub code-scanning uses to sort and threshold
+findings.
 
 Results are cached to `~/.cache/casket/osv-cache.json` (override with
 `CASKET_OSV_CACHE`). A bundled read-only seed DB resolves a small curated set
