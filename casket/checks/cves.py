@@ -76,6 +76,20 @@ upstream links. The new detail keys flow through all three output formats for
 free (json flatten, h1md bullets, SARIF result properties). Keys are omitted
 entirely when empty, so clean/seed findings and the existing tests are
 unaffected.
+
+[Worker decision: fixed-version remediation surfacing — Rotation 21]
+Rotation 19 surfaced the advisory and patch *URLs* from the OSV record, but not
+the single most actionable remediation field a scanner can give an operator:
+*which version to upgrade to*. OSV records carry it in the ``affected`` array —
+each range's ``{"fixed": "<ver>"}`` event marks the version that resolves the
+vuln. This rotation extracts those into ``detail["fixed_versions"]`` (the full
+de-duplicated list across the package's ranges), turning a finding from "here is
+the advisory" into "...and upgrade to X to fix it". Like the Rotation 19
+enrichment it costs **zero new dependencies and zero new network calls** — the
+``affected`` array is already in the record casket fetches and caches for
+severity. The key flows through json / h1md / sarif output for free and is
+omitted entirely for still-unfixed vulns (no ``fixed`` event), so clean/seed
+findings and the existing tests are unaffected. See ``_fixed_versions_from_osv``.
 """
 
 from __future__ import annotations
@@ -511,6 +525,13 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
             # is the patch and the advisory". See _references_from_osv.
             if aliases:
                 detail["aliases"] = aliases
+            # The single most actionable remediation field: which version to
+            # upgrade to. Pulled from the OSV ``affected`` ranges' ``fixed``
+            # events — already in the record casket fetched, no extra network
+            # call. Omitted when the vuln is still unfixed (no ``fixed`` event).
+            fixed = _fixed_versions_from_osv(vuln, pkg.name)
+            if fixed:
+                detail["fixed_versions"] = fixed
             refs = _references_from_osv(vuln)
             if refs.get("fix"):
                 detail["fix_urls"] = refs["fix"]
@@ -539,6 +560,69 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
 _OSV_FIX_REF_TYPES = frozenset({"FIX"})
 _OSV_ADVISORY_REF_TYPES = frozenset({"ADVISORY", "REPORT"})
 _OSV_EXPLOIT_REF_TYPES = frozenset({"EXPLOIT", "EVIDENCE"})
+
+
+def _fixed_versions_from_osv(vuln: dict, package_name: str) -> list[str]:
+    """Extract the remediation (fixed) versions from an OSV record.
+
+    The single most actionable remediation field a scanner can surface is *which
+    version to upgrade to*. OSV records carry it in the ``affected`` array: each
+    affected entry pins a ``package`` (ecosystem + name) and one or more
+    ``ranges``, whose ``events`` mark version transitions —
+    ``{"introduced": "0"}`` opens a vulnerable range and ``{"fixed": "<ver>"}``
+    closes it (the version that *resolves* the vuln). We collect every ``fixed``
+    version across the ranges whose affected ``package.name`` matches the
+    installed package — first-seen order, de-duplicated.
+
+    Surfacing this costs **no extra network call**: the ``affected`` array is
+    already in the OSV record casket fetches and caches for severity. It is the
+    natural completion of the Rotation 19 enrichment (which surfaced the advisory
+    and patch *URLs* but not the concrete version to upgrade to).
+
+    Defensive throughout: a non-list ``affected``, malformed entries, a missing
+    ``package``/``ranges``/``events``, non-string versions, the open-ended
+    ``"0"`` sentinel, and ranges with no ``fixed`` event (still-unfixed vulns)
+    are all skipped rather than crashing the scan. Package-name matching is
+    case-insensitive and tolerates a missing affected ``package`` (some seed /
+    sparse records omit it) by accepting its ranges — better to surface a fix
+    than to drop it on a name mismatch.
+    """
+    raw = vuln.get("affected")
+    if not isinstance(raw, list):
+        return []
+    want = package_name.strip().lower()
+    out: list[str] = []
+    seen: set[str] = set()
+    for affected in raw:
+        if not isinstance(affected, dict):
+            continue
+        pkg = affected.get("package")
+        if isinstance(pkg, dict):
+            name = pkg.get("name")
+            if isinstance(name, str) and name.strip().lower() != want:
+                # An affected entry that names a *different* package — skip it.
+                continue
+        ranges = affected.get("ranges")
+        if not isinstance(ranges, list):
+            continue
+        for rng in ranges:
+            if not isinstance(rng, dict):
+                continue
+            events = rng.get("events")
+            if not isinstance(events, list):
+                continue
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                fixed = event.get("fixed")
+                if not isinstance(fixed, str):
+                    continue
+                fixed = fixed.strip()
+                if not fixed or fixed == "0" or fixed in seen:
+                    continue
+                seen.add(fixed)
+                out.append(fixed)
+    return out
 
 
 def _aliases_from_osv(vuln: dict) -> list[str]:

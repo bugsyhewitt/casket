@@ -250,10 +250,11 @@ over env vars. Credentials are never logged.
 - `--format json` — the canonical machine-readable report. Every finding carries
   `category`, `severity`, `layer_sha`, and `path_in_layer`, plus category-specific
   fields (`rule` for creds/misconfig; `cve_id`, `package`, `installed_version`
-  for CVEs). CVE findings also carry the cross-reference identifiers and
-  remediation links the OSV record provides — `aliases`, `fix_urls`,
-  `advisory_urls`, `exploit_urls` (see
-  [CVE references & aliases](#cve-references--aliases)). When the image config
+  for CVEs). CVE findings also carry the remediation version, cross-reference
+  identifiers, and remediation links the OSV record provides — `fixed_versions`,
+  `aliases`, `fix_urls`, `advisory_urls`, `exploit_urls` (see
+  [CVE remediation, references & aliases](#cve-remediation-references--aliases)).
+  When the image config
   records build history, findings also carry `layer_command` — the Dockerfile
   instruction that introduced the layer (see
   [Layer command attribution](#layer-command-attribution)).
@@ -304,16 +305,18 @@ derived from the image config rather than a layer (misconfig checks) carry no
 `layer_command`, since they belong to no single filesystem layer. If an image
 ships without history, findings simply omit the field — nothing else changes.
 
-## CVE references & aliases
+## CVE remediation, references & aliases
 
 A CVE finding answers more than "which package has which CVE" — it also tells
-you **where to go next**. Every OSV record `casket` resolves already carries the
-upstream cross-references and remediation links, so `casket` surfaces them on
-the finding with **no extra network call** (the data rides along with the
-severity lookup `casket` already performs and caches):
+you **what to upgrade to** and **where to go next**. Every OSV record `casket`
+resolves already carries the fix version, the upstream cross-references, and the
+remediation links, so `casket` surfaces them on the finding with **no extra
+network call** (the data rides along with the severity lookup `casket` already
+performs and caches):
 
 | field | source | what it gives you |
 |---|---|---|
+| `fixed_versions` | OSV `affected[].ranges[].events[].fixed` | the version(s) to upgrade to that resolve the vuln |
 | `aliases` | OSV `aliases` | the full id list for the same vuln (CVE + GHSA + distro ids), de-duplicated |
 | `fix_urls` | OSV `references` type `FIX` | the patch / remediation commit(s) |
 | `advisory_urls` | OSV `references` types `ADVISORY`, `REPORT` | the advisory write-up(s) |
@@ -321,15 +324,18 @@ severity lookup `casket` already performs and caches):
 
 Each field is a list, de-duplicated and in first-seen order. A field is **omitted
 entirely** when the OSV record carries nothing for it — so a finding with no
-known patch simply has no `fix_urls` key, rather than an empty one. The headline
-`cve_id` still prefers a `CVE-…` alias when present, falling back to the raw OSV
-id; `aliases` exposes the rest. All four fields flow through every output format:
-top-level keys in `json`, bullets in `h1md`, and `result.properties` entries in
-`sarif`.
+known patch simply has no `fix_urls` key, and a **still-unfixed** vuln (no
+`fixed` event in its OSV ranges) has no `fixed_versions` key, rather than an
+empty one. `fixed_versions` is the single most actionable field: it turns "this
+package has a CVE" into "...upgrade to X to fix it". The headline `cve_id` still
+prefers a `CVE-…` alias when present, falling back to the raw OSV id; `aliases`
+exposes the rest. All fields flow through every output format: top-level keys in
+`json`, bullets in `h1md`, and `result.properties` entries in `sarif`.
 
-This is the GHSA / NVD reference enrichment value without an external API
-dependency or rate-limit/auth concerns — OSV's own `references` already aggregate
-the upstream advisory and patch links.
+This is the GHSA / NVD remediation enrichment value without an external API
+dependency or rate-limit/auth concerns — OSV's own `affected` ranges and
+`references` already aggregate the fix version, the upstream advisory, and the
+patch links.
 
 ```json
 {
@@ -340,6 +346,7 @@ the upstream advisory and patch links.
   "osv_id": "GHSA-x84v-xcm2-53pg",
   "package": "requests",
   "installed_version": "2.19.0",
+  "fixed_versions": ["2.20.0"],
   "aliases": ["CVE-2018-18074", "GHSA-x84v-xcm2-53pg"],
   "fix_urls": ["https://github.com/psf/requests/commit/c45d…"],
   "advisory_urls": ["https://github.com/advisories/GHSA-x84v-xcm2-53pg"]
