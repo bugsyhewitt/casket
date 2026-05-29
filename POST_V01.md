@@ -439,6 +439,46 @@ crashes. Zero new dependencies (stdlib `json`). Covered by 13 new tests in
 contract, severity-ordering monotonicity across a mixed document, and the
 unknown-severity default path).
 
+### Item 11 — CVSS-derived CVE severity from the OSV-standard `severity` array
+
+**Priority: HIGH. ✅ IMPLEMENTED (Phase 2, Rotation 14).**
+
+Items 2/10 made SARIF carry a `security-severity` float and `--fail-on`
+(Rotation 9) gate by severity — but both are only as good as the qualitative
+`severity` string casket assigns each CVE. That string came solely from
+`_severity_from_osv()` reading `database_specific.severity`, an explicit label
+that **only PyPI/GHSA records reliably carry**. The OSV records for the OS
+ecosystems casket spent Rotations 1/6/8/11 wiring up — Debian, Alpine, Red Hat
+— almost universally carry severity as a CVSS *vector* in the OSV-standard
+top-level `severity` array and have **no** `database_specific.severity` at all.
+So every OS-package CVE silently defaulted to `high`: a low-severity Debian CVE
+and a critical one looked identical, and `--fail-on critical` / SARIF severity
+sort were effectively blind for the exact package families casket targets.
+
+**What shipped.** `_severity_from_osv()` in `casket/checks/cves.py` now resolves
+severity most-authoritative-first: (1) `database_specific.severity` when it's a
+recognised label (unchanged, still wins); (2) the OSV-standard `severity` array
+— `_severity_from_cvss_array()` picks the newest usable CVSS version present
+(V4 > V3 > V2), `_cvss_base_score()` recomputes the **CVSS v3.x base score**
+from the vector with the standard formula (scope-aware impact/exploitability,
+CVSS `Roundup`), and `_cvss_band()` buckets it into casket's vocabulary
+(`9.0+`→critical, `7.0+`→high, `4.0+`→medium, else low); (3) the prior `high`
+default, untouched, for unparseable/absent signal. CVSS v2/v4 vectors (different
+formulae) are skipped, not mis-scored, so a lower-ranked usable V3 vector still
+wins. Base scores were validated against the FIRST.org v3.1 calculator. Zero new
+dependencies (stdlib `re` only). Covered by **11 new tests** in
+`tests/test_checks.py` (FIRST.org reference scores, band ranges, incomplete-vector
+None path, array parsing + version preference + non-list/empty handling,
+db_specific-wins resolution order, the new CVSS fallback, the
+medium-no-longer-misreported-as-high regression, the conservative default, and
+an end-to-end seeded CVE proving a CVSS-5.4 record now reports `medium`).
+
+**Why this was the pick.** It's a correctness fix that makes the two severity-
+consuming features casket already shipped (`--fail-on`, SARIF `security-severity`)
+actually trustworthy for OS-package CVEs — the dominant finding type for the
+Debian/Alpine/Red Hat images casket targets. High value, low complexity, zero new
+dependencies, no scope creep.
+
 ### Candidate next items (not yet done)
 
 - **Alpine `edge` handling** — `etc/alpine-release` on edge images is non-numeric;

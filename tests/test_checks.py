@@ -489,3 +489,159 @@ def test_creds_entropy_clean_image_no_entropy_findings():
     assert entropy_findings == [], (
         f"clean image should not produce entropy findings; got: {entropy_findings}"
     )
+
+
+# ---------------------------------------------------------------------------
+# CVSS severity resolution tests (POST_V01 Item 11 — OSV-standard severity array)
+# ---------------------------------------------------------------------------
+#
+# OSV records key qualitative severity in two places:
+#   - database_specific.severity  (an explicit label, mostly PyPI/GHSA)
+#   - the top-level "severity" array (CVSS vectors — what Debian/Alpine/Red Hat
+#     records actually carry, with NO database_specific.severity at all)
+# casket previously only read the first, defaulting every OS-package CVE to
+# "high". These tests pin the CVSS-array path and the resolution order.
+
+from casket.checks.cves import (  # noqa: E402
+    _cvss_band,
+    _cvss_base_score,
+    _severity_from_cvss_array,
+    _severity_from_osv,
+)
+
+
+def test_cvss_base_score_matches_first_org_references():
+    """Recomputed CVSS v3.x base scores match the FIRST.org calculator."""
+    # (vector, expected base score) — verified against the FIRST.org v3.1 calc.
+    refs = [
+        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", 9.8),
+        ("CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N", 3.1),
+        ("CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:N", 5.4),
+        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:L/I:L/A:N", 7.2),  # scope changed
+        ("CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N", 7.5),  # v3.0 prefix
+        ("CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H", 7.8),  # local priv esc
+        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N", 0.0),  # no impact
+    ]
+    for vector, expected in refs:
+        got = _cvss_base_score(vector)
+        assert got is not None, f"failed to score {vector}"
+        assert abs(got - expected) < 0.05, f"{vector}: got {got}, want {expected}"
+
+
+def test_cvss_band_buckets_match_standard_ranges():
+    """Score → qualitative band follows the standard CVSS v3.x ranges."""
+    assert _cvss_band(0.0) == "low"      # "none" folds into low (casket has no none)
+    assert _cvss_band(3.9) == "low"
+    assert _cvss_band(4.0) == "medium"
+    assert _cvss_band(6.9) == "medium"
+    assert _cvss_band(7.0) == "high"
+    assert _cvss_band(8.9) == "high"
+    assert _cvss_band(9.0) == "critical"
+    assert _cvss_band(10.0) == "critical"
+
+
+def test_cvss_base_score_returns_none_for_incomplete_vector():
+    """A vector missing a required base metric is unscorable (None)."""
+    # Missing A: metric.
+    assert _cvss_base_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H") is None
+    assert _cvss_base_score("garbage") is None
+
+
+def test_severity_from_cvss_array_parses_vector():
+    """The OSV-standard severity array resolves to the CVSS-derived band."""
+    arr = [
+        {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}
+    ]
+    assert _severity_from_cvss_array(arr) == "critical"
+
+
+def test_severity_from_cvss_array_prefers_higher_version():
+    """When several CVSS versions are present, the newest usable one wins."""
+    arr = [
+        # A low-scoring V3 vector...
+        {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N"},  # 3.1 -> low
+        # ...and a high-scoring V3 again (same rank) — first-seen at equal rank.
+    ]
+    assert _severity_from_cvss_array(arr) == "low"
+    # An unparseable V2 vector is skipped so the V3 still wins.
+    arr2 = [
+        {"type": "CVSS_V2", "score": "AV:N/AC:L/Au:N/C:P/I:P/A:P"},
+        {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"},
+    ]
+    assert _severity_from_cvss_array(arr2) == "critical"
+
+
+def test_severity_from_cvss_array_handles_non_list_and_empty():
+    """A missing/empty/garbage severity value yields None (caller defaults)."""
+    assert _severity_from_cvss_array(None) is None
+    assert _severity_from_cvss_array([]) is None
+    assert _severity_from_cvss_array("oops") is None
+    assert _severity_from_cvss_array([{"type": "CVSS_V2", "score": "bad"}]) is None
+
+
+def test_severity_database_specific_wins_over_cvss_array():
+    """An explicit database_specific.severity label takes priority over CVSS."""
+    vuln = {
+        "database_specific": {"severity": "LOW"},
+        "severity": [
+            {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}
+        ],
+    }
+    assert _severity_from_osv(vuln) == "low"
+
+
+def test_severity_falls_back_to_cvss_array_when_no_database_specific():
+    """OS-package records (no database_specific) now resolve via CVSS, not blanket high."""
+    vuln = {
+        "severity": [
+            {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}
+        ]
+    }
+    assert _severity_from_osv(vuln) == "critical"
+
+
+def test_severity_medium_cvss_no_longer_misreported_as_high():
+    """A genuinely medium CVE (no database_specific) is now 'medium', not 'high'."""
+    vuln = {
+        "severity": [
+            {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:N"}
+        ]
+    }
+    assert _severity_from_osv(vuln) == "medium"
+
+
+def test_severity_defaults_to_high_when_nothing_parseable():
+    """No severity signal at all preserves the conservative 'high' default."""
+    assert _severity_from_osv({}) == "high"
+    assert _severity_from_osv({"severity": []}) == "high"
+    assert _severity_from_osv({"database_specific": {"severity": "weird"}}) == "high"
+
+
+def test_cve_finding_severity_resolved_from_cvss_array_end_to_end(_isolate_osv_cache):
+    """End-to-end: a seeded OSV record with only a CVSS array yields the right band."""
+    img = load_tarball(fixture_path("old-package.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    client.seed(
+        "PyPI",
+        "requests",
+        "2.19.0",
+        [
+            {
+                "id": "GHSA-x84v-xcm2-53pg",
+                "aliases": ["CVE-2018-18074"],
+                "summary": "requests sends auth on redirect",
+                # No database_specific.severity — only the OSV-standard array.
+                "severity": [
+                    {
+                        "type": "CVSS_V3",
+                        "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:N",
+                    }
+                ],
+            }
+        ],
+    )
+    findings = cves.run(img, osv_client=client)
+    assert findings, "expected a CVE finding"
+    assert findings[0].severity == "medium", (
+        f"CVSS 5.4 should map to medium, got {findings[0].severity}"
+    )

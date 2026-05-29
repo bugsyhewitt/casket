@@ -489,9 +489,167 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
 
 
 def _severity_from_osv(vuln: dict) -> str:
-    """Best-effort severity from an OSV record's database_specific or CVSS."""
+    """Best-effort qualitative severity from an OSV record.
+
+    Resolution order, most-authoritative first:
+
+    1. ``database_specific.severity`` — an explicit qualitative label
+       (``CRITICAL``/``HIGH``/``MEDIUM``/``LOW``) some ecosystems (PyPI/GHSA)
+       attach. When present and recognised it wins outright.
+    2. The OSV-standard top-level ``severity`` array — a list of
+       ``{"type": "CVSS_V3"|"CVSS_V4", "score": "<vector>"}`` entries. Most
+       real OSV.dev records (Debian, Alpine, Red Hat especially) carry a CVSS
+       *vector* here and **no** ``database_specific.severity`` at all. We parse
+       the CVSS base score out of the vector and map it to a qualitative band
+       per the standard CVSS v3.x severity ranges. Preferring the highest CVSS
+       version available (V4 over V3) keeps the rating current as OSV migrates.
+    3. Fallback: ``high`` — conservative when nothing is parseable, matching
+       the prior behaviour so a missing/garbled record never silently downgrades.
+
+    Returning the precise band (rather than blanket ``high``) is what makes the
+    ``--fail-on`` gate and the SARIF ``security-severity`` sort meaningful for
+    OS-package CVEs.
+    """
     spec = vuln.get("database_specific", {})
-    sev = str(spec.get("severity", "")).lower()
-    if sev in {"critical", "high", "medium", "low"}:
-        return sev
+    if isinstance(spec, dict):
+        sev = str(spec.get("severity", "")).lower()
+        if sev in {"critical", "high", "medium", "low"}:
+            return sev
+
+    band = _severity_from_cvss_array(vuln.get("severity"))
+    if band is not None:
+        return band
+
     return "high"
+
+
+# CVSS metric type codes ranked by recency; later versions win when several are
+# present on a record (OSV records frequently carry both V3 and V4 vectors).
+_CVSS_TYPE_RANK = {"CVSS_V2": 0, "CVSS_V3": 1, "CVSS_V4": 2}
+
+# Pull the ``AV:N/AC:L/...`` metric string out of a CVSS vector, regardless of
+# the ``CVSS:3.1/`` or ``CVSS:4.0/`` prefix some emitters include.
+_CVSS_BASE_SCORE_RE = re.compile(r"\b([A-Z]+):([A-Z]+)\b")
+
+
+def _severity_from_cvss_array(severities: Any) -> str | None:
+    """Map an OSV-standard ``severity`` array to a qualitative band.
+
+    ``severities`` is the value of the record's top-level ``severity`` key: a
+    list of ``{"type": ..., "score": "<CVSS vector>"}`` dicts. We compute the
+    CVSS base score from the highest-version vector present and bucket it into
+    the standard qualitative bands::
+
+        0.0          -> none  (treated as ``low`` for output uniformity)
+        0.1 –  3.9   -> low
+        4.0 –  6.9   -> medium
+        7.0 –  8.9   -> high
+        9.0 – 10.0   -> critical
+
+    Returns ``None`` when no usable CVSS vector can be scored, so the caller
+    falls through to its own default.
+    """
+    if not isinstance(severities, list):
+        return None
+
+    best_rank = -1
+    best_score: float | None = None
+    for entry in severities:
+        if not isinstance(entry, dict):
+            continue
+        typ = str(entry.get("type", ""))
+        score_str = entry.get("score")
+        if not isinstance(score_str, str):
+            continue
+        rank = _CVSS_TYPE_RANK.get(typ, -1)
+        if rank < best_rank:
+            continue
+        value = _cvss_base_score(score_str)
+        if value is None:
+            continue
+        # On equal rank keep the first; a strictly newer version always wins.
+        if rank > best_rank or best_score is None:
+            best_rank = rank
+            best_score = value
+
+    if best_score is None:
+        return None
+    return _cvss_band(best_score)
+
+
+def _cvss_base_score(vector: str) -> float | None:
+    """Compute the CVSS v3.x base score from a vector string.
+
+    OSV stores CVSS as the vector (``CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H``),
+    not the numeric score, so we recompute the base score from the metrics. We
+    implement the standard CVSS v3.0/v3.1 base-score formula (the two share the
+    same base equation; the only v3.1 change is to environmental/temporal
+    rounding, which does not affect the base score we need here).
+
+    Returns ``None`` if the vector is missing any required base metric — the
+    caller then ignores this entry. CVSS v2 and v4 vectors are not scored here
+    (different formulae); they are skipped and a lower-ranked usable vector,
+    if any, is used instead.
+    """
+    metrics = dict(_CVSS_BASE_SCORE_RE.findall(vector))
+    # Required base metrics for CVSS v3.x.
+    required = ("AV", "AC", "PR", "UI", "S", "C", "I", "A")
+    if not all(k in metrics for k in required):
+        return None
+
+    av = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}.get(metrics["AV"])
+    ac = {"L": 0.77, "H": 0.44}.get(metrics["AC"])
+    ui = {"N": 0.85, "R": 0.62}.get(metrics["UI"])
+    scope_changed = metrics["S"] == "C"
+    # Privileges Required is scope-dependent.
+    if scope_changed:
+        pr = {"N": 0.85, "L": 0.68, "H": 0.5}.get(metrics["PR"])
+    else:
+        pr = {"N": 0.85, "L": 0.62, "H": 0.27}.get(metrics["PR"])
+    cia = {"H": 0.56, "L": 0.22, "N": 0.0}
+    c = cia.get(metrics["C"])
+    i = cia.get(metrics["I"])
+    a = cia.get(metrics["A"])
+    if None in (av, ac, pr, ui, c, i, a):
+        return None
+
+    iss = 1 - (1 - c) * (1 - i) * (1 - a)
+    if scope_changed:
+        impact = 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02) ** 15
+    else:
+        impact = 6.42 * iss
+    exploitability = 8.22 * av * ac * pr * ui
+
+    if impact <= 0:
+        return 0.0
+    if scope_changed:
+        base = min(1.08 * (impact + exploitability), 10.0)
+    else:
+        base = min(impact + exploitability, 10.0)
+    # CVSS rounds the base score *up* to one decimal place.
+    return _cvss_roundup(base)
+
+
+def _cvss_roundup(value: float) -> float:
+    """CVSS v3.1 ``Roundup``: round up to the nearest tenth.
+
+    Implemented on integer-tenths to avoid binary float drift (e.g. 4.0001 must
+    become 4.1, while an exact 4.0 must stay 4.0).
+    """
+    int_input = round(value * 100_000)
+    if int_input % 10_000 == 0:
+        return int_input / 100_000
+    return (int(int_input / 10_000) + 1) / 10.0
+
+
+def _cvss_band(score: float) -> str:
+    """Bucket a CVSS base score into casket's qualitative severity vocabulary."""
+    if score >= 9.0:
+        return "critical"
+    if score >= 7.0:
+        return "high"
+    if score >= 4.0:
+        return "medium"
+    # CVSS "none" (0.0) folds into low for output uniformity (casket has no
+    # "none" band); 0.1–3.9 is the standard low band.
+    return "low"

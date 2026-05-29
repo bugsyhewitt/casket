@@ -263,6 +263,26 @@ RPM coverage reads the modern **SQLite** rpmdb only; the legacy Berkeley DB
 silently (no finding, no crash). RPM versions are matched as full EVR strings
 (`epoch:version-release`, e.g. `1:3.0.7-6.el9`).
 
+### CVE severity
+
+Each CVE finding's severity is resolved from the OSV record, most-authoritative
+first:
+
+1. `database_specific.severity` — an explicit qualitative label
+   (`CRITICAL`/`HIGH`/`MEDIUM`/`LOW`) that PyPI/GHSA records attach. When
+   present it wins outright.
+2. The OSV-standard top-level **`severity` array** of CVSS vectors
+   (`{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/..."}`). Most OS-package
+   records — Debian, Alpine, Red Hat — carry a CVSS *vector* here and **no**
+   `database_specific.severity`. `casket` recomputes the CVSS v3.x base score
+   from the vector (preferring the newest CVSS version present) and buckets it
+   into the standard bands: `0.1–3.9` → low, `4.0–6.9` → medium, `7.0–8.9` →
+   high, `9.0–10.0` → critical.
+3. Fallback `high` — conservative, used only when nothing is parseable.
+
+This makes `--fail-on` and the SARIF `security-severity` sort meaningful for
+OS-package CVEs, which previously all defaulted to `high`.
+
 Results are cached to `~/.cache/casket/osv-cache.json` (override with
 `CASKET_OSV_CACHE`). A bundled read-only seed DB resolves a small curated set
 with no network at all. Pass `--offline` to forbid network access entirely.
