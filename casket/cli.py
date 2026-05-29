@@ -250,6 +250,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--group-by-package",
+        action="store_true",
+        help=(
+            "h1md only: collapse CVE findings that share an (package, "
+            "installed_version) into a single section, surfacing the package's "
+            "worst severity in the section header and listing each CVE as a "
+            "bullet. A single vulnerable package routinely produces 10+ CVEs; "
+            "grouping turns a long flat list into one section per package so "
+            "the operator triages by component. Pure presentation: json/sarif "
+            "are byte-for-byte unchanged so machine consumers stay stable, and "
+            "--fail-on / --compare run on the same finding set either way. "
+            "creds/misconfig findings (no package field) render under their "
+            "per-finding headers as before. Omitting the flag keeps the "
+            "ungrouped per-finding layout (default)."
+        ),
+    )
+    parser.add_argument(
         "--compare",
         metavar="BASELINE.json",
         help=(
@@ -429,7 +446,13 @@ def main(argv: list[str] | None = None) -> int:
         # Exit 1 iff this build introduced new findings versus the baseline.
         return 1 if regression_count(diff) > 0 else 0
 
-    output = render(findings, args.format, image=args.image, scan_stats=scan_stats)
+    output = render(
+        findings,
+        args.format,
+        image=args.image,
+        scan_stats=scan_stats,
+        group_by_package=args.group_by_package,
+    )
     print(output)
     return exit_code(findings, args.fail_on)
 
