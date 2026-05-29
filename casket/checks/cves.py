@@ -532,6 +532,21 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
             fixed = _fixed_versions_from_osv(vuln, pkg.name)
             if fixed:
                 detail["fixed_versions"] = fixed
+            # Surface the numeric CVSS base score and the source vector when the
+            # OSV record carries a scorable CVSS entry. The qualitative
+            # ``severity`` band (below) tells the operator the bucket; the score
+            # tells them where within it (a 9.8 critical reads differently from a
+            # 9.0 one), and the vector shows the attack shape that produced it.
+            # Already computed during banding — no extra network call, no extra
+            # calculator pass beyond the one band lookup. Omitted when the record
+            # has no scorable CVSS vector (severity then came from
+            # database_specific or the conservative default).
+            cvss = _cvss_from_osv(vuln)
+            if cvss is not None:
+                score, version, vector = cvss
+                detail["cvss_score"] = score
+                detail["cvss_version"] = version
+                detail["cvss_vector"] = vector
             refs = _references_from_osv(vuln)
             if refs.get("fix"):
                 detail["fix_urls"] = refs["fix"]
@@ -1288,6 +1303,39 @@ def _cvss4_base_score(vector: str) -> float | None:
     return math.floor(value * 10 + 0.5) / 10.0
 
 
+def _cvss_score_and_version(vector: str) -> tuple[float, str] | None:
+    """Compute the numeric base score and CVSS version label for a vector.
+
+    Returns ``(base_score, version)`` where ``version`` is ``"2.0"``, ``"3.x"``,
+    or ``"4.0"``, or ``None`` if the vector is unrecognised / unscorable. This is
+    the single place casket turns a vector into a number: ``_severity_from_cvss_vector``
+    bands the score for the qualitative label, and ``_cvss_from_osv`` surfaces the
+    raw number and the version for operator triage. Version is identified by the
+    ``CVSS:2`` / ``CVSS:3`` / ``CVSS:4`` prefix; a bare (prefix-less) vector that
+    carries the v2-only ``Au`` metric is scored as v2, otherwise as v3 (the
+    original prefix-less behaviour).
+    """
+    v = vector.strip()
+    upper = v.upper()
+    if upper.startswith("CVSS:4"):
+        score = _cvss4_base_score(v)
+        return (score, "4.0") if score is not None else None
+    if upper.startswith("CVSS:3"):
+        score = _cvss3_base_score(v)
+        return (score, "3.x") if score is not None else None
+    if upper.startswith("CVSS:2"):
+        score = _cvss2_base_score(v)
+        return (score, "2.0") if score is not None else None
+    # Prefix-less vector: the v2-only ``Au`` metric disambiguates it as v2,
+    # otherwise treat a bare vector as v3 (the original behaviour).
+    metrics = _cvss_vector_metrics(v)
+    if "AU" in metrics:
+        score = _cvss2_base_score(v)
+        return (score, "2.0") if score is not None else None
+    score = _cvss3_base_score(v)
+    return (score, "3.x") if score is not None else None
+
+
 def _severity_from_cvss_vector(vector: str) -> str | None:
     """Derive a qualitative severity from a CVSS vector string, or ``None``.
 
@@ -1316,34 +1364,38 @@ def _severity_from_cvss_vector(vector: str) -> str | None:
     default, degrading severity accuracy that the --fail-on gate, SARIF
     security-severity sort, and --min-severity filter all consume.
     """
-    v = vector.strip()
-    upper = v.upper()
-    if upper.startswith("CVSS:4"):
-        score = _cvss4_base_score(v)
-        if score is not None:
-            return _cvss_score_to_severity(score)
+    result = _cvss_score_and_version(vector)
+    if result is None:
         return None
-    if upper.startswith("CVSS:3"):
-        score = _cvss3_base_score(v)
-        if score is not None:
-            return _cvss_score_to_severity(score)
-        return None
-    if upper.startswith("CVSS:2"):
-        score = _cvss2_base_score(v)
-        if score is not None:
-            return _cvss_score_to_severity(score)
-        return None
-    # Prefix-less vector: the v2-only ``Au`` metric disambiguates it as v2,
-    # otherwise treat a bare vector as v3 (the original behaviour).
-    metrics = _cvss_vector_metrics(v)
-    if "AU" in metrics:
-        score = _cvss2_base_score(v)
-        if score is not None:
-            return _cvss_score_to_severity(score)
-        return None
-    score = _cvss3_base_score(v)
-    if score is not None:
-        return _cvss_score_to_severity(score)
+    score, _version = result
+    return _cvss_score_to_severity(score)
+
+
+def _cvss_from_osv(vuln: dict) -> tuple[float, str, str] | None:
+    """Extract the numeric CVSS base score, version, and source vector.
+
+    Walks the standard OSV ``severity`` array in order and returns
+    ``(base_score, version, vector)`` for the first entry casket can score
+    (CVSS v4.0/v3.x/v2), or ``None`` when no scorable CVSS vector is present
+    (the record's severity then came from ``database_specific`` or the
+    conservative default, and there is no numeric score to surface).
+
+    This is the triage companion to ``_severity_from_osv``: the band tells an
+    operator *which* bucket a finding is in, the numeric score tells them where
+    *within* the bucket it sits (a 9.8 critical vs. a 9.0 one), and the vector
+    shows *why*. The score is already computed during banding — surfacing it
+    discards nothing and adds no work beyond the same single calculator call.
+    """
+    for entry in vuln.get("severity", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        vector = entry.get("score")
+        if not isinstance(vector, str):
+            continue
+        result = _cvss_score_and_version(vector)
+        if result is not None:
+            score, version = result
+            return (score, version, vector.strip())
     return None
 
 

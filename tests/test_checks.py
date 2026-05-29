@@ -1022,3 +1022,131 @@ def test_cves_finding_severity_derives_from_cvss_v4_array(_isolate_osv_cache):
     assert findings[0].severity == "critical", (
         "finding severity must derive from the 9.3 CVSS v4 vector, not default 'high'"
     )
+
+
+# ---------------------------------------------------------------------------
+# Numeric CVSS base score + source vector surfacing (Rotation 25).
+#
+# Casket already *computes* the numeric base score internally to derive the
+# qualitative band, then discarded it. These tests pin the helper that now
+# also returns the number, the version, and the source vector, and the run()
+# wiring that surfaces them on a finding's detail for operator triage.
+# ---------------------------------------------------------------------------
+
+
+def test_cvss_score_and_version_scores_v3():
+    """A v3.1 vector yields its numeric base score and the '3.x' version."""
+    result = cves._cvss_score_and_version(
+        "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    )
+    assert result == (9.8, "3.x")
+
+
+def test_cvss_score_and_version_scores_v2_prefixless_by_au():
+    """A prefix-less vector carrying the v2-only Au metric scores as v2."""
+    result = cves._cvss_score_and_version("AV:N/AC:L/Au:N/C:P/I:P/A:P")
+    assert result == (7.5, "2.0")
+
+
+def test_cvss_score_and_version_scores_v4():
+    """A v4.0 vector yields its interpolated base score and the '4.0' version."""
+    result = cves._cvss_score_and_version(
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+    )
+    assert result == (9.3, "4.0")
+
+
+def test_cvss_score_and_version_returns_none_on_unscorable():
+    """A malformed / unrecognised vector returns None, never a crash."""
+    assert cves._cvss_score_and_version("CVSS:4.0/AV:N/AC:L") is None
+    assert cves._cvss_score_and_version("garbage") is None
+
+
+def test_cvss_from_osv_returns_score_version_and_vector():
+    """_cvss_from_osv extracts (score, version, vector) from the severity array."""
+    vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    vuln = {"severity": [{"type": "CVSS_V3", "score": vector}]}
+    assert cves._cvss_from_osv(vuln) == (9.8, "3.x", vector)
+
+
+def test_cvss_from_osv_takes_first_scorable_entry():
+    """The first scorable CVSS entry in the array wins (matches band order)."""
+    good = "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+    vuln = {
+        "severity": [
+            "not-a-dict",
+            {"type": "CVSS_V3"},  # no score key
+            {"type": "CVSS_V3", "score": 9.8},  # score not a string
+            {"type": "CVSS_V4", "score": good},
+        ]
+    }
+    assert cves._cvss_from_osv(vuln) == (9.3, "4.0", good)
+
+
+def test_cvss_from_osv_none_when_no_scorable_vector():
+    """No scorable CVSS vector -> None (severity then comes from elsewhere)."""
+    # database_specific-only record: there's no numeric score to surface.
+    assert cves._cvss_from_osv({"database_specific": {"severity": "high"}}) is None
+    # Malformed v4 vector -> unscorable -> None, matching the severity fallback.
+    vuln = {"severity": [{"type": "CVSS_V4", "score": "CVSS:4.0/AV:N/AC:L"}]}
+    assert cves._cvss_from_osv(vuln) is None
+
+
+def test_cves_finding_surfaces_cvss_score_and_vector(_isolate_osv_cache):
+    """End-to-end: a CVE finding carries the numeric score, version, and vector."""
+    img = load_tarball(fixture_path("old-package.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    client.seed(
+        "PyPI",
+        "requests",
+        "2.19.0",
+        [
+            {
+                "id": "GHSA-x84v-xcm2-53pg",
+                "aliases": ["CVE-2018-18074"],
+                "summary": "requests sends auth on redirect",
+                "severity": [{"type": "CVSS_V3", "score": vector}],
+            }
+        ],
+    )
+    findings = cves.run(img, osv_client=client)
+    assert findings
+    f = findings[0]
+    assert f.severity == "critical"
+    assert f.detail["cvss_score"] == 9.8
+    assert f.detail["cvss_version"] == "3.x"
+    assert f.detail["cvss_vector"] == vector
+    # The fields flatten to the top level of the JSON finding (consumer surface).
+    from casket import findings as findings_mod
+
+    report = findings_mod.report_dict([f], image="img")
+    entry = report["findings"][0]
+    assert entry["cvss_score"] == 9.8
+    assert entry["cvss_version"] == "3.x"
+    assert entry["cvss_vector"] == vector
+
+
+def test_cves_finding_omits_cvss_fields_when_unscored(_isolate_osv_cache):
+    """A finding whose severity came from database_specific carries no cvss_* keys."""
+    img = load_tarball(fixture_path("old-package.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    client.seed(
+        "PyPI",
+        "requests",
+        "2.19.0",
+        [
+            {
+                "id": "GHSA-nocvss",
+                "summary": "no CVSS vector recorded",
+                "database_specific": {"severity": "medium"},
+            }
+        ],
+    )
+    findings = cves.run(img, osv_client=client)
+    assert findings
+    f = findings[0]
+    assert f.severity == "medium"
+    assert "cvss_score" not in f.detail
+    assert "cvss_version" not in f.detail
+    assert "cvss_vector" not in f.detail
