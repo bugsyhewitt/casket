@@ -355,6 +355,48 @@ def filter_by_vex(
     return kept
 
 
+def filter_by_ecosystem(
+    findings: list[Finding], suppressed: set[str] | None = None
+) -> list[Finding]:
+    """Drop CVE findings whose OSV ecosystem the operator chose to suppress.
+
+    ``suppressed`` is a set of ecosystem names to hide (case-insensitively) —
+    e.g. ``{"debian"}`` to drop every Debian OS-package CVE and focus on
+    application dependencies (PyPI/npm/…), or ``{"alpine", "debian", "red hat"}``
+    to mute all OS-package noise at once. Ecosystem only exists on ``cve``
+    findings (creds/misconfig carry no package identity), so this never touches
+    them — they always survive.
+
+      - ``None`` / empty set (no ``--suppress-ecosystem`` flag): return every
+        finding unchanged (no-op, casket's original behaviour).
+      - otherwise: keep every **non-CVE** finding, and keep a CVE finding only
+        when its ``detail["ecosystem"]`` (lower-cased) is *not* in the suppress
+        set. A CVE finding that carries no ecosystem is kept (it can't be matched
+        against the suppress list, so it is never silently hidden).
+
+    Matching is case-insensitive so an operator needn't remember OSV's exact
+    capitalisation (``Debian``/``debian``, ``Red Hat``/``red hat`` all match).
+
+    Like ``--min-severity`` / ``--min-epss`` / ``--vex`` this shapes the
+    *reported* set before the exit-code gate / ``--compare`` diff runs, so what
+    fails the build matches what the operator sees — a CVE suppressed by
+    ecosystem neither shows up nor secretly trips the gate.
+    """
+    if not suppressed:
+        return list(findings)
+    lowered = {e.lower() for e in suppressed}
+    kept: list[Finding] = []
+    for f in findings:
+        if f.category != "cve":
+            kept.append(f)
+            continue
+        eco = f.detail.get("ecosystem")
+        if isinstance(eco, str) and eco.lower() in lowered:
+            continue
+        kept.append(f)
+    return kept
+
+
 def exit_code(findings: list[Finding], fail_on: str = "any") -> int:
     """Compute the process exit code for a scan, gated by severity threshold.
 

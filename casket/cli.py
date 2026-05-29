@@ -28,6 +28,7 @@ from casket.scanner import (
     MIN_SEVERITY_CHOICES,
     component_stats,
     exit_code,
+    filter_by_ecosystem,
     filter_by_epss,
     filter_by_severity,
     filter_by_vex,
@@ -194,6 +195,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--suppress-ecosystem",
+        action="append",
+        default=None,
+        metavar="ECOSYSTEM",
+        help=(
+            "suppress CVE findings from this OSV ecosystem (case-insensitive); "
+            "repeatable. e.g. --suppress-ecosystem Debian hides every Debian "
+            "OS-package CVE so you can focus on application dependencies "
+            "(PyPI/npm/…); pass it again (--suppress-ecosystem Debian "
+            "--suppress-ecosystem Alpine) to mute several at once. Only CVE "
+            "findings carry an ecosystem, so creds/misconfig findings are "
+            "unaffected. Like --min-severity/--min-epss/--vex it shapes the "
+            "reported set before the gate/diff, so a suppressed CVE neither "
+            "shows up nor trips the exit-code gate. Omitting the flag reports "
+            "every finding (default)."
+        ),
+    )
+    parser.add_argument(
         "--stats",
         action="store_true",
         help=(
@@ -340,6 +359,16 @@ def main(argv: list[str] | None = None) -> int:
     # shows up nor secretly trips the gate. Absent (the default), it is a
     # no-op; creds/misconfig findings are never pruned by it.
     findings = filter_by_vex(findings, vex_suppressed)
+    # --suppress-ecosystem prunes CVE findings from operator-named OSV
+    # ecosystems (e.g. hide all Debian OS-package CVEs to focus on app deps).
+    # Like the severity / EPSS / VEX filters it shapes the *reported* set before
+    # the gate / diff, so what fails the build matches what the operator sees.
+    # Absent (the default) it is a no-op; creds/misconfig findings (which carry
+    # no ecosystem) are never pruned by it.
+    ecosystem_suppressed = (
+        set(args.suppress_ecosystem) if args.suppress_ecosystem else None
+    )
+    findings = filter_by_ecosystem(findings, ecosystem_suppressed)
 
     # --stats attaches a component-count inventory summary (total packages,
     # per-ecosystem breakdown, vulnerable-package count) to the report. Computed

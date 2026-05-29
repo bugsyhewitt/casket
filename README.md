@@ -65,6 +65,7 @@ casket --image REF
        [--min-severity {all,critical,high,medium,low,info}]
        [--min-epss PROBABILITY]
        [--vex VEX.json] [--vex-max-age DAYS]
+       [--suppress-ecosystem ECOSYSTEM]
        [--compare BASELINE.json]
        [--stats]
        [--offline]
@@ -292,6 +293,40 @@ A timestamped statement:
   to expire). It takes a positive whole number of days.
 - Omit the flag (the default) to keep every suppression forever regardless of
   its timestamp — the original `--vex` behaviour is unchanged.
+
+### Suppressing whole ecosystems with `--suppress-ecosystem`
+
+On most images the noisiest CVEs come from the base OS layer — hundreds of
+Debian/Alpine/Red Hat package CVEs you don't own and patch on the distro's
+cadence, not yours. When you want to focus a review on the **application**
+dependencies you actually control (PyPI/npm/…), `--suppress-ecosystem` drops
+every CVE finding from a named [OSV ecosystem](https://ossf.github.io/osv-schema/#defined-ecosystems):
+
+```bash
+# hide all Debian OS-package CVEs, keep everything else
+casket --image ./myapp.tar --checks cves --suppress-ecosystem Debian
+
+# mute several OS ecosystems at once (the flag is repeatable)
+casket --image ./myapp.tar --checks all \
+  --suppress-ecosystem Debian --suppress-ecosystem Alpine
+
+# combine with the other report filters — they all shape the same reported set
+casket --image ./myapp.tar --checks all --suppress-ecosystem Debian --min-epss 0.1
+```
+
+- Matching is **case-insensitive**, so you needn't remember OSV's exact
+  capitalisation — `Debian`, `debian`, `Red Hat`, and `red hat` all match.
+- Only **CVE** findings carry an ecosystem, so `creds` and `misconfig` findings
+  are never pruned by this flag — it is purely a CVE-noise knob.
+- A CVE finding that carries **no** ecosystem is always kept: it can't be matched
+  against the suppress list, so it's never silently hidden.
+- Like `--min-severity` / `--min-epss` / `--vex`, the filter shapes the
+  **reported** set *before* the `--fail-on` gate and the `--compare` diff, so a
+  CVE suppressed by ecosystem neither shows up in the report nor trips the gate —
+  what fails the build matches what you see.
+- This is a *suppression* knob, not a *selection* one: to scan only certain
+  check types use `--checks`; to keep only certain ecosystems, suppress the rest.
+- Omit the flag (the default) to report every finding regardless of ecosystem.
 
 ### Diffing two scans with `--compare`
 
