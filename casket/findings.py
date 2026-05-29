@@ -165,7 +165,7 @@ def _sarif_message(finding: Finding) -> str:
         if summary:
             parts.append(str(summary))
     extras = []
-    for key in ("package", "installed_version", "ecosystem", "port", "env_var", "user"):
+    for key in ("package", "installed_version", "ecosystem", "port", "service", "env_var", "user"):
         if key in detail and detail[key] not in (None, ""):
             extras.append(f"{key}={detail[key]}")
     if extras:

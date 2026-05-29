@@ -439,12 +439,68 @@ def test_misconfig_check_running_as_root():
     assert f.layer_sha.startswith("sha256:")
 
 
-def test_misconfig_check_exposed_port_and_suspicious_env():
+def test_misconfig_check_sensitive_port_and_suspicious_env():
+    # rootuser-image exposes 22/tcp (SSH) -> sensitive_port (not generic
+    # exposed_port) and bakes in API_TOKEN -> suspicious_env_var.
     img = load_tarball(fixture_path("rootuser-image.tar"))
     findings = misconfig.run(img)
     rules = {f.detail["rule"] for f in findings}
-    assert "exposed_port" in rules
+    assert "sensitive_port" in rules
     assert "suspicious_env_var" in rules
+    # Port 22 is sensitive, so it must NOT also produce a generic exposed_port
+    # finding (no duplicate, single higher-signal finding instead).
+    assert "exposed_port" not in rules
+    ssh = next(f for f in findings if f.detail["rule"] == "sensitive_port")
+    assert ssh.severity == "high"
+    assert ssh.detail["service"] == "SSH"
+    assert ssh.detail["port"] == "22/tcp"
+
+
+# ---------------------------------------------------------------------------
+# Sensitive-port misconfig tests (ports-image fixture)
+# ---------------------------------------------------------------------------
+#
+# ports-image (non-root user "appuser") exposes:
+#   8080/tcp -> generic exposed_port (low)
+#   5432/tcp -> sensitive_port PostgreSQL (high)
+#   2375/tcp -> sensitive_port Docker API unencrypted (critical)
+
+def test_misconfig_sensitive_ports_classified_by_service():
+    img = load_tarball(fixture_path("ports-image.tar"))
+    findings = misconfig.run(img)
+    sensitive = {
+        f.detail["port"]: f
+        for f in findings
+        if f.detail["rule"] == "sensitive_port"
+    }
+    assert set(sensitive) == {"5432/tcp", "2375/tcp"}
+    assert sensitive["5432/tcp"].severity == "high"
+    assert sensitive["5432/tcp"].detail["service"] == "PostgreSQL"
+    # The Docker API port carries a critical per-port severity from the map.
+    assert sensitive["2375/tcp"].severity == "critical"
+    assert sensitive["2375/tcp"].detail["service"] == "Docker API (unencrypted)"
+
+
+def test_misconfig_benign_port_falls_through_to_generic_rule():
+    img = load_tarball(fixture_path("ports-image.tar"))
+    findings = misconfig.run(img)
+    generic = [f for f in findings if f.detail["rule"] == "exposed_port"]
+    # Only the non-sensitive app port produces a generic low-severity finding.
+    assert [f.detail["port"] for f in generic] == ["8080/tcp"]
+    assert generic[0].severity == "low"
+
+
+def test_misconfig_sensitive_port_not_duplicated_as_generic():
+    """Each exposed port yields exactly one finding — sensitive or generic, never both."""
+    img = load_tarball(fixture_path("ports-image.tar"))
+    findings = misconfig.run(img)
+    port_findings = [
+        f for f in findings if f.detail["rule"] in ("sensitive_port", "exposed_port")
+    ]
+    ports = [f.detail["port"] for f in port_findings]
+    # 3 exposed ports -> exactly 3 port findings, no duplicates.
+    assert sorted(ports) == ["2375/tcp", "5432/tcp", "8080/tcp"]
+    assert len(ports) == len(set(ports))
 
 
 def test_misconfig_clean_image_not_root():
