@@ -151,11 +151,21 @@ def component_stats(image: Image, findings: list[Finding]) -> dict[str, Any]:
         how much of the inventory is actually affected, which a raw
         ``finding_count`` (one per vuln, so a single package can inflate it)
         does not tell you.
+      - ``severity_histogram``: ``{severity: count}`` over **every** reported
+        finding — creds, cve, and misconfig alike — keyed by the five canonical
+        severity levels and ordered most-severe-first (``critical`` → ``info``).
+        Severities with no findings are omitted so the block stays compact, and
+        an unrecognised severity is bucketed under ``"unknown"`` (last) rather
+        than dropped. Where ``finding_count`` answers "how many issues?" this
+        answers "what's the severity distribution?" — the canonical triage
+        question, and the natural complement to the component counts. It counts
+        the *filtered* findings, so it always matches what the operator sees.
 
-    ``findings`` is the already-filtered finding set so the vulnerable count
-    reflects what the operator sees (a CVE triaged away by --vex/--min-severity
-    is no longer counted as a vulnerable component). Only ``cve`` findings carry
-    package identity, so creds/misconfig findings are ignored here.
+    ``findings`` is the already-filtered finding set so the vulnerable count and
+    the severity histogram reflect what the operator sees (a CVE triaged away by
+    --vex/--min-severity is no longer counted). Only ``cve`` findings carry
+    package identity, so creds/misconfig findings are ignored for the package
+    counts — but they *are* counted in the severity histogram.
     """
     from casket.checks.cves import package_inventory
 
@@ -165,7 +175,10 @@ def component_stats(image: Image, findings: list[Finding]) -> dict[str, Any]:
         by_ecosystem[pkg.ecosystem] = by_ecosystem.get(pkg.ecosystem, 0) + 1
 
     vulnerable: set[tuple[str, str, str]] = set()
+    severity_counts: dict[str, int] = {}
     for f in findings:
+        sev = f.severity if f.severity in _SEVERITY_RANK else "unknown"
+        severity_counts[sev] = severity_counts.get(sev, 0) + 1
         if f.category != "cve":
             continue
         detail = f.detail
@@ -178,10 +191,20 @@ def component_stats(image: Image, findings: list[Finding]) -> dict[str, Any]:
     ordered = dict(
         sorted(by_ecosystem.items(), key=lambda kv: (-kv[1], kv[0]))
     )
+    # Severity histogram ordered most-severe-first; recognised levels follow the
+    # canonical rank, an "unknown" bucket (if any) sorts last. Empty levels are
+    # omitted entirely so the block stays compact.
+    severity_histogram = dict(
+        sorted(
+            severity_counts.items(),
+            key=lambda kv: _SEVERITY_RANK.get(kv[0], 99),
+        )
+    )
     return {
         "total_components": len(packages),
         "by_ecosystem": ordered,
         "vulnerable_components": len(vulnerable),
+        "severity_histogram": severity_histogram,
     }
 
 

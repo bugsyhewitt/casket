@@ -903,8 +903,59 @@ dependencies and zero network (works fully `--offline`), and closes a real
 triage-context gap — "how big is my attack surface, and how much of it is
 actually vulnerable?" — that `finding_count` alone can't answer.
 
+### Item 20 — `--stats` severity histogram
+
+**Priority: MEDIUM. ✅ IMPLEMENTED (Phase 2, Rotation 27).**
+
+**The gap.** The dispatch named two candidates — "OSV severity histogram" and
+"`--output-filter suppress-by-ecosystem`". Both are feasible and neither was
+shipped, so the pick came down to value-per-effort and fit. The severity
+histogram won: (1) it is a *reporting* feature — a direct sibling of the
+Rotation 26 `--stats` component-count summary it extends — whereas
+suppress-by-ecosystem is a fourth report filter on a surface already covered by
+`--min-severity` / `--min-epss` / `--vex` plus `--checks` exclusion; (2) the
+severity field lives on **every** finding (creds, cve, misconfig), so a
+histogram spans the whole report, while ecosystem only exists on CVE findings;
+(3) `finding_count` alone couldn't answer the canonical triage question — "what's
+the severity distribution of my findings?" — the natural complement to the
+attack-surface counts already in `scan_stats`.
+
+**What shipped.** The existing `scan_stats` block (gated behind the existing
+`--stats` flag — no new flag) gains a `severity_histogram` key:
+`{severity: count}` over every *filtered* finding across all checks, ordered
+most-severe-first (`critical` → `info`), empty levels omitted, and an
+unrecognised severity bucketed under `"unknown"` (sorted last) rather than
+dropped. `casket.scanner.component_stats` does the aggregation in the same
+single pass that computes `vulnerable_components`; it flows through all three
+output formats for free (json/`--compare` object key, a `by severity:` line in
+the h1md **Components** section, and the sarif run-level `properties.scan_stats`).
+Because it counts the filtered set, the histogram always sums to
+`finding_count`. Zero new dependencies, zero network (works fully `--offline`),
+and absent the flag the output is byte-for-byte unchanged.
+
+**Validation.** 8 new tests in `tests/test_stats.py` (374 total, full suite
+green): histogram counting across all three categories, most-severe-first
+ordering, empty-when-no-findings, the `"unknown"` bucket for an unrecognised
+severity, the h1md `by severity:` line (present when non-empty, absent when
+empty), and an end-to-end CLI assertion that the histogram sums to
+`finding_count`.
+
+**Why this was the pick.** It extends the proven Rotation-26 reporting path with
+the one triage axis `scan_stats` was missing, stays strictly inside the
+daemonless / no-SBOM / network-free architecture, touches no gate/filter/sort/
+diff surface, and adds no dependency — the highest-value, lowest-risk of the two
+dispatched candidates.
+
 ### Candidate next items (not yet done)
 
+- **`--output-filter suppress-by-ecosystem`** — the *other* Rotation-27
+  candidate, deferred not rejected: a filter that drops findings by OSV
+  ecosystem (e.g. hide all `Debian` OS-package CVEs to focus on app deps). It
+  fits the proven `filter_by_severity`/`filter_by_epss`/`filter_by_vex` pure-
+  decision-function pattern and would shape the reported set before the gate /
+  diff like the others. Lower priority than the histogram because the existing
+  three filters plus `--checks` exclusion already cover most noise-suppression
+  needs, and ecosystem only exists on CVE findings.
 - **GHSA / NVD reference enrichment** — cross-link CVE findings to GHSA
   identifiers (GitHub Advisory DB) or surface NVD `references` (exploit / patch
   URLs). Both add an external network dependency and rate-limit/auth concerns,

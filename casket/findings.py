@@ -170,6 +170,12 @@ def _render_h1md(
         by_ecosystem = scan_stats.get("by_ecosystem") or {}
         for ecosystem, count in by_ecosystem.items():
             lines.append(f"- **{ecosystem}:** `{count}`")
+        histogram = scan_stats.get("severity_histogram") or {}
+        if histogram:
+            lines.append(
+                "- **by severity:** "
+                + ", ".join(f"{sev} `{count}`" for sev, count in histogram.items())
+            )
         lines.append("")
     if not findings:
         lines.append("_No findings._")
