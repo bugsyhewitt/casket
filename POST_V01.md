@@ -792,6 +792,63 @@ win that *reuses* the entire Rotation 9–16 severity-accuracy investment (the
 or unencrypted Docker socket as the high/critical risk it is, not low noise). No
 scope creep, no architecture change, no new data source.
 
+### Item 18 — Numeric CVSS base score + source vector surfacing
+
+**Priority: HIGH. ✅ IMPLEMENTED (Phase 2, Rotation 25).**
+
+**The gap.** The dispatch named two candidates — a "CVSS v4 severity threshold
+filter" and a "multi-SBOM aggregate scan" — but both were already covered or
+out of scope: CVSS v4.0 vector *scoring* shipped in Rotation 16 (Item 14), the
+`--min-severity` threshold filter shipped in Rotation 15 (Item 13) and the
+`--fail-on` gate already gates on the (v2/v3/v4-scored) band, so a "v4 severity
+threshold filter" is the intersection of two shipped features; and full SBOM
+generation is explicitly out of scope (NOT-on-list, line ~821). So this was a
+fresh gap pick from the codebase. The real, unaddressed gap: casket *computes*
+the numeric CVSS base score internally (`_cvss{2,3,4}_base_score`) to derive the
+qualitative band, then **threw the number away**, keeping only the band. An
+operator triaging a busy image saw a wall of `critical`/`high` findings with no
+way to rank *within* a band — a 9.8 and a 9.0 are both `critical`, but the first
+is more urgent — and no visibility into the attack shape (network vs. local,
+privileges required) the band was distilled from.
+
+**What shipped.** Each scorable CVE finding now carries three new `detail`
+fields: `cvss_score` (the numeric base score, e.g. `9.8`), `cvss_version`
+(`"2.0"` / `"3.x"` / `"4.0"`), and `cvss_vector` (the source vector string). A
+new `_cvss_score_and_version()` is now the single place a vector becomes a
+number+version (the v4/v3/v2 dispatch that `_severity_from_cvss_vector` used to
+own, refactored so the band function and the new surfacing share one calculator
+pass — no double-scoring). `_cvss_from_osv(vuln)` walks the standard OSV
+`severity` array in the *same order* the band uses and returns the first
+scorable `(score, version, vector)`. The three keys are **omitted together**
+when the record has no scorable CVSS vector (severity then came from
+`database_specific` or the conservative default — there is no number to
+surface), mirroring the existing `fixed_versions`/`fix_urls` omit-when-absent
+convention. The fields flow through all three output formats for free (json
+flatten / h1md bullets / sarif `result.properties`) via the existing
+detail-surfacing path. Zero new dependencies, no network, no architecture
+change — the severity band, the `--fail-on` gate, `--min-severity`, and the
+SARIF `security-severity` float are all byte-identical; this is purely additive
+triage signal.
+
+**Validation.** 9 new tests in `tests/test_checks.py` (339→348 total): the
+`_cvss_score_and_version` helper for v3/v2-prefixless/v4 and the
+unscorable→None case; `_cvss_from_osv` returning `(score, version, vector)`,
+taking the first scorable array entry (skipping malformed ones), and returning
+`None` for database_specific-only / malformed-v4 records; an E2E proving a
+finding carries `cvss_score`/`cvss_version`/`cvss_vector` and that they flatten
+to the top level of the JSON report; and an E2E proving the three keys are
+absent on a finding whose severity came from `database_specific`. The full
+suite passes.
+
+**Why this was the pick.** Both dispatched options were already shipped or
+out-of-scope, so this is the next best gap: it's a direct, high-value extension
+of the entire Rotation 9–16 severity-accuracy arc (the score is already
+computed; surfacing it discards nothing), it reuses the proven `detail[...]` →
+output-formats path with zero new dependencies and no network, it stays inside
+the daemonless/no-SBOM architecture, and it closes the most-requested triage gap
+— "which of my forty `high` findings do I fix first?" — without touching any of
+the consuming gate/filter/sort surfaces.
+
 ### Candidate next items (not yet done)
 
 - **GHSA / NVD reference enrichment** — cross-link CVE findings to GHSA

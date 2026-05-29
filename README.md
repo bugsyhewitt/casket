@@ -472,21 +472,37 @@ performs and caches):
 
 | field | source | what it gives you |
 |---|---|---|
+| `cvss_score` | OSV `severity[].score` (CVSS vector, scored by `casket`) | the numeric base score (e.g. `9.8`) — where the finding sits *within* its severity band |
+| `cvss_version` | OSV `severity[].type` / vector prefix | which CVSS revision produced the score: `"2.0"`, `"3.x"`, or `"4.0"` |
+| `cvss_vector` | OSV `severity[].score` | the source vector string the score and band were computed from |
 | `fixed_versions` | OSV `affected[].ranges[].events[].fixed` | the version(s) to upgrade to that resolve the vuln |
 | `aliases` | OSV `aliases` | the full id list for the same vuln (CVE + GHSA + distro ids), de-duplicated |
 | `fix_urls` | OSV `references` type `FIX` | the patch / remediation commit(s) |
 | `advisory_urls` | OSV `references` types `ADVISORY`, `REPORT` | the advisory write-up(s) |
 | `exploit_urls` | OSV `references` types `EXPLOIT`, `EVIDENCE` | known proof-of-concept / exploit link(s) |
 
-Each field is a list, de-duplicated and in first-seen order. A field is **omitted
-entirely** when the OSV record carries nothing for it — so a finding with no
-known patch simply has no `fix_urls` key, and a **still-unfixed** vuln (no
-`fixed` event in its OSV ranges) has no `fixed_versions` key, rather than an
+The reference fields (`fix_urls`, `advisory_urls`, `exploit_urls`, `aliases`,
+`fixed_versions`) are lists, de-duplicated and in first-seen order. A field is
+**omitted entirely** when the OSV record carries nothing for it — so a finding
+with no known patch simply has no `fix_urls` key, and a **still-unfixed** vuln
+(no `fixed` event in its OSV ranges) has no `fixed_versions` key, rather than an
 empty one. `fixed_versions` is the single most actionable field: it turns "this
 package has a CVE" into "...upgrade to X to fix it". The headline `cve_id` still
 prefers a `CVE-…` alias when present, falling back to the raw OSV id; `aliases`
-exposes the rest. All fields flow through every output format: top-level keys in
-`json`, bullets in `h1md`, and `result.properties` entries in `sarif`.
+exposes the rest.
+
+The `cvss_score`, `cvss_version`, and `cvss_vector` fields surface the **numeric**
+CVSS base score `casket` already computes when deriving the severity band (see
+[CVE severity](#cve-severity)). The qualitative `severity` tells you the bucket;
+`cvss_score` tells you where the finding sits *within* it — a `9.8` and a `9.0`
+are both `critical`, but the first is more urgent — and `cvss_vector` shows the
+attack shape that produced it (network vs. local, privileges required, impact).
+These three keys are **omitted together** when the OSV record carries no scorable
+CVSS vector (severity then came from the record's `database_specific` string or
+the conservative default, so there is no number to surface).
+
+All of these fields flow through every output format: top-level keys in `json`,
+bullets in `h1md`, and `result.properties` entries in `sarif`.
 
 This is the GHSA / NVD remediation enrichment value without an external API
 dependency or rate-limit/auth concerns — OSV's own `affected` ranges and
@@ -502,6 +518,9 @@ patch links.
   "osv_id": "GHSA-x84v-xcm2-53pg",
   "package": "requests",
   "installed_version": "2.19.0",
+  "cvss_score": 6.1,
+  "cvss_version": "3.x",
+  "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
   "fixed_versions": ["2.20.0"],
   "aliases": ["CVE-2018-18074", "GHSA-x84v-xcm2-53pg"],
   "fix_urls": ["https://github.com/psf/requests/commit/c45d…"],
@@ -645,6 +664,14 @@ finally to a conservative `high`. Accurate severities matter downstream: they
 drive the `--fail-on` CI gate, the `--min-severity` report filter, and the SARIF
 `security-severity` score that GitHub code-scanning uses to sort and threshold
 findings.
+
+The **numeric** base score, the CVSS version, and the source vector are surfaced
+on each scorable CVE finding as `cvss_score`, `cvss_version`, and `cvss_vector`
+(see [CVE remediation, references & aliases](#cve-remediation-references--aliases)).
+The band groups findings into buckets; the numeric score ranks them *within* a
+bucket so an operator can triage the most urgent `critical` first, and the vector
+shows the attack shape. The three keys are omitted together when no scorable CVSS
+vector is present.
 
 Results are cached to `~/.cache/casket/osv-cache.json` (override with
 `CASKET_OSV_CACHE`). A bundled read-only seed DB resolves a small curated set
