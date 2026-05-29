@@ -63,6 +63,7 @@ casket --image REF
        --format {json,h1md,sarif}
        [--fail-on {any,critical,high,medium,low,info,none}]
        [--min-severity {all,critical,high,medium,low,info}]
+       [--min-epss PROBABILITY]
        [--compare BASELINE.json]
        [--offline]
        [--token TOKEN]
@@ -137,6 +138,67 @@ a focused gate — e.g. report high+ and fail only on critical:
 ```bash
 casket --image ./myapp.tar --checks all --min-severity high --fail-on critical
 ```
+
+### Prioritising by exploitation likelihood with EPSS and `--min-epss`
+
+CVSS severity answers "how *bad* is this vuln if exploited?" — it says nothing
+about how *likely* exploitation is. On a busy base image carrying hundreds of
+high-CVSS OS-package CVEs, the overwhelming majority are never actually
+exploited, and severity alone gives you no way to tell which ones are.
+
+[EPSS](https://www.first.org/epss/) (the Exploit Prediction Scoring System)
+fills that gap: the FIRST.org model assigns every published CVE a **probability
+(0.0–1.0)** that it will be exploited in the wild over the next 30 days, plus a
+**percentile** rank against all scored CVEs. `casket` enriches every CVE finding
+with its EPSS score and exposes it on the finding:
+
+```json
+{
+  "category": "cve",
+  "title": "requests 2.19.0: CVE-2018-18074",
+  "severity": "medium",
+  "cve_id": "CVE-2018-18074",
+  "epss_score": 0.00427,
+  "epss_percentile": 0.71234
+}
+```
+
+`--min-epss PROBABILITY` then turns that into a triage knob: it reports only the
+CVE findings the EPSS model rates at least that likely to be exploited, pruning
+the long tail of high-CVSS-but-never-exploited noise.
+
+```bash
+# report only CVEs the model rates ≥ 10% likely to be exploited in the wild
+casket --image ./myapp.tar --checks cves --min-epss 0.1
+
+# combine with severity: only high+ findings that are also ≥ 50% likely
+casket --image ./myapp.tar --checks all --min-severity high --min-epss 0.5
+```
+
+Behaviour and guarantees:
+
+- The threshold is a probability and must be in `[0.0, 1.0]`; anything else is a
+  clean argument error, not a traceback.
+- The filter applies to **CVE findings only**. Leaked credentials and
+  misconfigurations have no exploitation-probability score and are *never*
+  pruned by `--min-epss` — they're a different class of problem.
+- Like `--min-severity`, the filter shapes the **reported** set *before* the
+  `--fail-on` gate (and `--compare` diff) run, so the build outcome stays
+  consistent with what you actually see. The `finding_count` in JSON output
+  reflects the filtered set.
+- A CVE with **no published EPSS score** (the model only covers published CVEs;
+  reserved, rejected, or very fresh ids are absent) does not clear an explicit
+  `--min-epss` bar and is pruned. Without the flag, scores are still surfaced;
+  CVEs with no score simply omit the `epss_score` key entirely (so existing
+  output stays byte-compatible).
+
+Scores come from a public, read-only `GET` to the FIRST.org EPSS API — all of an
+image's CVEs resolve in **one** batched request, and every result is cached to
+`~/.cache/casket/epss-cache.json` (override with `CASKET_EPSS_CACHE`).
+`--offline` forbids the network entirely: cached scores still apply, and CVEs
+with no cached score simply carry no EPSS field (and are pruned by an explicit
+`--min-epss`). A network failure degrades the same way — never a crash, and the
+miss is left uncached so a later online run retries.
 
 ### Diffing two scans with `--compare`
 
@@ -253,7 +315,9 @@ over env vars. Credentials are never logged.
   for CVEs). CVE findings also carry the remediation version, cross-reference
   identifiers, and remediation links the OSV record provides — `fixed_versions`,
   `aliases`, `fix_urls`, `advisory_urls`, `exploit_urls` (see
-  [CVE remediation, references & aliases](#cve-remediation-references--aliases)).
+  [CVE remediation, references & aliases](#cve-remediation-references--aliases)),
+  plus the EPSS exploitation-probability score (`epss_score`, `epss_percentile`;
+  see [Prioritising by exploitation likelihood with EPSS](#prioritising-by-exploitation-likelihood-with-epss-and---min-epss)).
   When the image config
   records build history, findings also carry `layer_command` — the Dockerfile
   instruction that introduced the layer (see

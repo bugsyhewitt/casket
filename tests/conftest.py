@@ -29,5 +29,13 @@ def _isolate_osv_cache(tmp_path, monkeypatch):
     yield cache
 
 
+@pytest.fixture(autouse=True)
+def _isolate_epss_cache(tmp_path, monkeypatch):
+    """Per-test EPSS cache file so tests never touch the real cache or network."""
+    cache = tmp_path / "epss-cache.json"
+    monkeypatch.setenv("CASKET_EPSS_CACHE", str(cache))
+    yield cache
+
+
 def fixture_path(name: str) -> str:
     return str(FIXTURE_DIR / name)

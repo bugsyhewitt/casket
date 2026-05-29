@@ -27,6 +27,7 @@ from casket.scanner import (
     FAIL_ON_CHOICES,
     MIN_SEVERITY_CHOICES,
     exit_code,
+    filter_by_epss,
     filter_by_severity,
     load_image,
     resolve_checks,
@@ -40,6 +41,26 @@ remote mode requires network access to the target registry.
 
 ETHICAL USE: only scan images you own or are explicitly authorized to assess.
 """
+
+
+def _epss_threshold(value: str) -> float:
+    """argparse type for --min-epss: a probability in the closed range [0, 1].
+
+    EPSS scores are probabilities, so a threshold outside ``[0.0, 1.0]`` is a
+    user error (and a value > 1.0 would silently suppress *every* CVE). We raise
+    a clean argparse error rather than accept it.
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"invalid EPSS threshold {value!r}: expected a number in [0.0, 1.0]"
+        )
+    if not (0.0 <= f <= 1.0):
+        raise argparse.ArgumentTypeError(
+            f"EPSS threshold {f} out of range: expected a probability in [0.0, 1.0]"
+        )
+    return f
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,6 +129,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--min-epss",
+        type=_epss_threshold,
+        default=None,
+        metavar="PROBABILITY",
+        help=(
+            "report only CVE findings whose EPSS score (exploitation "
+            "probability, 0.0-1.0) is at this threshold or higher. Enriches "
+            "every CVE finding with its EPSS score from FIRST.org (cached, "
+            "read-only) and prunes the rest. creds/misconfig findings are "
+            "unaffected. Omitting the flag reports every finding (default)."
+        ),
+    )
+    parser.add_argument(
         "--compare",
         metavar="BASELINE.json",
         help=(
@@ -153,11 +187,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     osv_client = None
+    epss_client = None
     selected = resolve_checks(args.checks)
     if "cves" in selected:
         from casket.osv import OSVClient
 
         osv_client = OSVClient(offline=args.offline)
+
+        # EPSS enrichment annotates every CVE finding with its exploitation
+        # probability and powers the --min-epss filter. It honours --offline
+        # (cache-only) exactly like the OSV lookup, and degrades a miss to "no
+        # score" so an offline/cold-cache run never fails — those findings just
+        # carry no EPSS field (and are pruned by an explicit --min-epss).
+        from casket.epss import EPSSClient
+
+        epss_client = EPSSClient(offline=args.offline)
 
     # Credentials: CLI flag wins, otherwise fall back to env vars (CI-safe).
     registry_user = args.registry_user or os.environ.get("CASKET_REGISTRY_USER")
@@ -180,7 +224,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"casket: failed to load image: {exc}", file=sys.stderr)
         return 2
 
-    findings = run_checks(image, selected, osv_client=osv_client)
+    findings = run_checks(
+        image, selected, osv_client=osv_client, epss_client=epss_client
+    )
     # --min-severity prunes the report (default "all" keeps everything). The
     # exit-code gate then runs on the *reported* set so the build outcome stays
     # consistent with what the operator actually sees: a suppressed low finding
@@ -189,6 +235,11 @@ def main(argv: list[str] | None = None) -> int:
     # same filtered set is what we diff, so the baseline and current scans are
     # compared at the operator's chosen severity floor.
     findings = filter_by_severity(findings, args.min_severity)
+    # --min-epss prunes CVE findings by exploitation probability (EPSS). Like
+    # --min-severity it shapes the *reported* set before the gate / diff runs,
+    # so what fails the build matches what the operator sees. Absent (the
+    # default), it is a no-op. creds/misconfig findings are never pruned by it.
+    findings = filter_by_epss(findings, args.min_epss)
 
     if args.compare:
         # Diff mode: compare this scan against a previous casket JSON report and
