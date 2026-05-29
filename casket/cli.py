@@ -16,7 +16,13 @@ import os
 import sys
 
 from casket import __version__
-from casket.findings import render
+from casket.compare import (
+    diff_reports,
+    load_baseline_report,
+    regression_count,
+    render_diff_json,
+)
+from casket.findings import render, report_dict
 from casket.scanner import (
     FAIL_ON_CHOICES,
     MIN_SEVERITY_CHOICES,
@@ -102,6 +108,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--compare",
+        metavar="BASELINE.json",
+        help=(
+            "diff mode: compare this scan against a previous casket JSON report "
+            "(produced with --format json). Emits a diff of added/removed/"
+            "changed/unchanged findings and exits 1 only when this build "
+            "introduces NEW findings versus the baseline. --min-severity is "
+            "applied to the current scan before diffing; --fail-on is ignored "
+            "in compare mode (the diff gates on new findings instead)."
+        ),
+    )
+    parser.add_argument(
         "--token",
         metavar="TOKEN",
         help="remote mode: static bearer token (sent as Authorization: Bearer)",
@@ -167,8 +185,31 @@ def main(argv: list[str] | None = None) -> int:
     # exit-code gate then runs on the *reported* set so the build outcome stays
     # consistent with what the operator actually sees: a suppressed low finding
     # neither shows up nor secretly fails the build. --fail-on still gates the
-    # exit code among the findings that survive filtering.
+    # exit code among the findings that survive filtering. In --compare mode the
+    # same filtered set is what we diff, so the baseline and current scans are
+    # compared at the operator's chosen severity floor.
     findings = filter_by_severity(findings, args.min_severity)
+
+    if args.compare:
+        # Diff mode: compare this scan against a previous casket JSON report and
+        # gate on *new* findings (regressions), not the absolute finding set.
+        try:
+            baseline = load_baseline_report(args.compare)
+        except FileNotFoundError:
+            print(
+                f"casket: baseline report not found: {args.compare}",
+                file=sys.stderr,
+            )
+            return 2
+        except (ValueError, OSError) as exc:
+            print(f"casket: failed to read baseline: {exc}", file=sys.stderr)
+            return 2
+        current = report_dict(findings, image=args.image)
+        diff = diff_reports(baseline, current)
+        print(render_diff_json(diff))
+        # Exit 1 iff this build introduced new findings versus the baseline.
+        return 1 if regression_count(diff) > 0 else 0
+
     output = render(findings, args.format, image=args.image)
     print(output)
     return exit_code(findings, args.fail_on)
