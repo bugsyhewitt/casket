@@ -946,16 +946,52 @@ daemonless / no-SBOM / network-free architecture, touches no gate/filter/sort/
 diff surface, and adds no dependency — the highest-value, lowest-risk of the two
 dispatched candidates.
 
-### Candidate next items (not yet done)
+### Item 21 — `--suppress-ecosystem` CVE-ecosystem filter
 
-- **`--output-filter suppress-by-ecosystem`** — the *other* Rotation-27
-  candidate, deferred not rejected: a filter that drops findings by OSV
-  ecosystem (e.g. hide all `Debian` OS-package CVEs to focus on app deps). It
-  fits the proven `filter_by_severity`/`filter_by_epss`/`filter_by_vex` pure-
-  decision-function pattern and would shape the reported set before the gate /
-  diff like the others. Lower priority than the histogram because the existing
-  three filters plus `--checks` exclusion already cover most noise-suppression
-  needs, and ecosystem only exists on CVE findings.
+**Priority: MEDIUM. ✅ IMPLEMENTED (Phase 2, Rotation 28).**
+
+**The gap.** The Rotation-28 dispatch named "OSV severity histogram" (already
+shipped, Item 20) and an "SBOM-linked severity report" (the `--stats` block —
+`vulnerable_components` + `severity_histogram` — already realises the SBOM-count
+intent inside the no-SBOM guardrail). With both dispatched candidates accounted
+for, the next genuine gap was the deferred-not-rejected Rotation-27 candidate:
+an ecosystem suppression filter. On most images the noisiest CVEs come from the
+base-OS layer (hundreds of Debian/Alpine/Red Hat package CVEs the operator
+patches on the distro's cadence, not theirs); the three existing filters
+(`--min-severity` heuristic, `--min-epss` probabilistic, `--vex` per-CVE triage)
+plus `--checks` exclusion couldn't say "mute this whole ecosystem so I can focus
+on the app deps I own."
+
+**What shipped.** A new `--suppress-ecosystem ECOSYSTEM` flag (repeatable,
+`action="append"`) and a `filter_by_ecosystem(findings, suppressed)` pure
+decision function in `casket.scanner` — a direct sibling of
+`filter_by_severity` / `filter_by_epss` / `filter_by_vex`. It drops every `cve`
+finding whose `detail["ecosystem"]` matches (case-insensitively) a named
+ecosystem; `creds`/`misconfig` findings carry no ecosystem and always survive,
+and a CVE with no ecosystem is never silently hidden. Wired into `cli.main`
+*after* the VEX filter so it shapes the same reported set before the `--fail-on`
+gate and `--compare` diff — what fails the build matches what the operator sees.
+Zero new dependencies, zero network (works fully `--offline`); absent the flag
+the output is byte-for-byte unchanged.
+
+**Validation.** 17 new tests in `tests/test_suppress_ecosystem.py` (full suite
+green): the pure filter (none/empty no-op, single + multiple ecosystem
+suppression, case-insensitive match, non-CVE survival, ecosystem-less-CVE
+survival, new-list return, empty input), the CLI surface (default `None`,
+repeatable append, help text), and four end-to-end runs against the
+`old-package.tar` (PyPI `requests`) fixture proving the report empties + gate
+clears on a match, case-insensitive match at the CLI, and the CVE surviving when
+a *different* ecosystem is suppressed.
+
+**Why this was the pick.** Both dispatched candidates were already shipped, so
+this closed the next real gap; it reuses the proven pure-decision-function
+filter pattern (the fourth in a consistent family), adds the one
+noise-suppression axis the existing knobs couldn't express, stays strictly
+inside the daemonless / no-SBOM / network-free architecture, and touches no
+sort/render/gate/diff internals beyond slotting one more filter into the
+established pipeline — the highest-value, lowest-risk remaining reporting knob.
+
+### Candidate next items (not yet done)
 - **GHSA / NVD reference enrichment** — cross-link CVE findings to GHSA
   identifiers (GitHub Advisory DB) or surface NVD `references` (exploit / patch
   URLs). Both add an external network dependency and rate-limit/auth concerns,
