@@ -60,6 +60,7 @@ casket --image REF
        --checks {creds,cves,misconfig,all}
        --format {json,h1md,sarif}
        [--fail-on {any,critical,high,medium,low,info,none}]
+       [--min-severity {all,critical,high,medium,low,info}]
        [--offline]
        [--token TOKEN]
        [--registry-user USER] [--registry-password PASS]
@@ -97,8 +98,42 @@ casket --image ./myapp.tar --checks all --fail-on any
 | `info` | any finding exists (info is the floor) |
 | `none` | never — report-only, always exits 0 on findings |
 
-The threshold gates the exit code only; the rendered report (`json`/`h1md`/
-`sarif`) always contains all findings so nothing is hidden from reviewers.
+The threshold gates the exit code only; by default the rendered report
+(`json`/`h1md`/`sarif`) contains all findings so nothing is hidden from
+reviewers. To prune the report itself, use `--min-severity` (below).
+
+### Cutting report noise with `--min-severity`
+
+`--fail-on` controls the *build outcome*; `--min-severity` controls *what gets
+reported*. On a busy base image with hundreds of low-severity OS package CVEs,
+you can suppress the noise and surface only what matters:
+
+```bash
+# report only high- and critical-severity findings
+casket --image ./myapp.tar --checks all --min-severity high
+
+# default: report everything (casket's original behaviour)
+casket --image ./myapp.tar --checks all --min-severity all
+```
+
+| `--min-severity` | reports findings that are … |
+|---|---|
+| `all` (default) | every finding |
+| `critical` | `critical` only |
+| `high` | `high` or `critical` |
+| `medium` | `medium` or higher |
+| `low` | `low` or higher |
+| `info` | any finding (info is the floor) |
+
+The filter prunes the report **before** the `--fail-on` gate runs, so the build
+outcome stays consistent with what you actually see: a finding you suppressed
+from the report never secretly fails the build. The `finding_count` in JSON
+output (and the SARIF/h1md bodies) reflect the filtered set. Combine the two for
+a focused gate — e.g. report high+ and fail only on critical:
+
+```bash
+casket --image ./myapp.tar --checks all --min-severity high --fail-on critical
+```
 
 ### tarball mode (no dependencies)
 

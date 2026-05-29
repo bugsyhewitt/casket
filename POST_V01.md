@@ -517,6 +517,51 @@ features (`--fail-on`, SARIF `security-severity`, severity rendering) consume,
 for a vector family (v2) that dominates older CVEs. High value, low complexity,
 zero new dependencies, no scope creep, no architecture change.
 
+### Item 13 — `--min-severity` report filtering
+
+**Priority: HIGH. ✅ IMPLEMENTED (Phase 2, Rotation 15).**
+
+**The gap.** Rotations 9–14 invested heavily in *severity accuracy* (the
+`--fail-on` gate, SARIF `security-severity`, and v3/v2 CVSS vector scoring) — but
+that accuracy only ever drove the *build outcome* and the *sort order*. The
+**report itself always contained every finding**, at every severity. On the busy
+base images a container scanner routinely meets (a `debian`/`ubuntu` image can
+carry hundreds of low-severity OS-package CVEs), the json/h1md/sarif output was
+an undifferentiated wall, and an operator had no first-class way to say "show me
+only what matters." Every comparable scanner ships this: Trivy's `--severity`,
+Grype's quality-gate output filtering. Its absence made casket's now-accurate
+severities far less useful in practice — you could *gate* on high+, but you
+still had to read past all the low/info noise to triage.
+
+**What shipped.** A `--min-severity {all,critical,high,medium,low,info}` CLI flag
+(default `all` — casket's original report-everything behaviour, fully
+back-compatible). `filter_by_severity()` in `casket/scanner.py` is the pure
+decision function: it keeps findings *at or above* the threshold using the same
+`_SEVERITY_RANK` the gate uses, returns a fresh list, treats an unknown
+severity as below `info` (dropped by any concrete threshold), and fails *open*
+on an unrecognised threshold value (keeps everything rather than silently hiding
+all findings). `cli.main()` applies the filter to the collected findings
+**before** both `render()` and `exit_code()`, so the build outcome stays
+consistent with what the operator sees — a finding suppressed from the report
+never secretly trips the `--fail-on` gate, and the json `finding_count` /
+SARIF results / h1md body all reflect the filtered set. `--min-severity` and
+`--fail-on` compose cleanly (e.g. `--min-severity high --fail-on critical`:
+report high+, fail only on critical). Zero new dependencies (stdlib only),
+zero architecture change. Covered by 17 new tests in `tests/test_min_severity.py`
+(the pure helper across all thresholds + the unknown-severity/unknown-threshold
+edge cases + new-list identity + the CLI parser surface + four E2E cases against
+the mixed-severity `rootuser-image` fixture proving keep/drop, the empty-report
+gate-clean path, and report/gate consistency). README updated with a dedicated
+`--min-severity` section and a table.
+
+**Why this was the pick.** It's the natural capstone to the Rotation 9–14
+severity-accuracy arc: those rotations made severities *correct*; this one makes
+them *actionable* on the output side, closing the one remaining first-class
+severity surface (the report) that the gate and SARIF sort had already gained.
+High operator value, low complexity, zero new dependencies, no scope creep, no
+architecture change — and the CVSS v4 alternative remains a larger table-driven
+standalone effort better suited to its own rotation.
+
 ### Candidate next items (not yet done)
 
 - **Alpine `edge` handling** — `etc/alpine-release` on edge images is non-numeric;

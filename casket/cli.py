@@ -19,7 +19,9 @@ from casket import __version__
 from casket.findings import render
 from casket.scanner import (
     FAIL_ON_CHOICES,
+    MIN_SEVERITY_CHOICES,
     exit_code,
+    filter_by_severity,
     load_image,
     resolve_checks,
     run_checks,
@@ -88,6 +90,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--min-severity",
+        choices=MIN_SEVERITY_CHOICES,
+        default="all",
+        metavar="THRESHOLD",
+        help=(
+            "report only findings at this severity or higher "
+            "(critical, high, medium, low, info). 'all' (default) reports every "
+            "finding. Cuts noise on busy images; the exit-code gate (--fail-on) "
+            "applies to the findings that remain after filtering."
+        ),
+    )
+    parser.add_argument(
         "--token",
         metavar="TOKEN",
         help="remote mode: static bearer token (sent as Authorization: Bearer)",
@@ -149,11 +163,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     findings = run_checks(image, selected, osv_client=osv_client)
+    # --min-severity prunes the report (default "all" keeps everything). The
+    # exit-code gate then runs on the *reported* set so the build outcome stays
+    # consistent with what the operator actually sees: a suppressed low finding
+    # neither shows up nor secretly fails the build. --fail-on still gates the
+    # exit code among the findings that survive filtering.
+    findings = filter_by_severity(findings, args.min_severity)
     output = render(findings, args.format, image=args.image)
     print(output)
-    # All findings are always reported; the --fail-on threshold gates only the
-    # exit code so CI pipelines can break the build on (say) HIGH+ while still
-    # surfacing lower-severity findings.
     return exit_code(findings, args.fail_on)
 
 

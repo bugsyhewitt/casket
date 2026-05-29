@@ -93,6 +93,41 @@ _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 # Accepted --fail-on values, in declaration order (for the CLI choices list).
 FAIL_ON_CHOICES = ["any", "critical", "high", "medium", "low", "info", "none"]
 
+# Accepted --min-severity values, in declaration order (for the CLI choices
+# list). ``all`` (the default) reports every finding — casket's original
+# behaviour; a severity name suppresses anything *below* it from the report.
+MIN_SEVERITY_CHOICES = ["all", "critical", "high", "medium", "low", "info"]
+
+
+def filter_by_severity(
+    findings: list[Finding], min_severity: str = "all"
+) -> list[Finding]:
+    """Drop findings below ``min_severity`` from the report.
+
+    Unlike ``exit_code`` (which gates only the *build*), this prunes what gets
+    *rendered*, so an operator can cut noise on a busy image — e.g.
+    ``--min-severity high`` shows only high and critical findings.
+
+      - ``"all"`` (default): return every finding unchanged (original behaviour).
+      - a severity (``critical``/``high``/``medium``/``low``/``info``): keep only
+        findings *at that severity or more severe*. ``--min-severity medium``
+        keeps critical/high/medium and drops low/info.
+
+    Findings whose severity is unrecognised rank below ``info`` and are dropped
+    by any concrete threshold (kept only under ``all``), matching the
+    fail-safe-quiet posture of the severity gate.
+    """
+    if min_severity == "all":
+        return list(findings)
+    threshold = _SEVERITY_RANK.get(min_severity)
+    if threshold is None:  # unknown value: don't silently hide everything
+        return list(findings)
+    return [
+        f
+        for f in findings
+        if _SEVERITY_RANK.get(f.severity, 99) <= threshold
+    ]
+
 
 def exit_code(findings: list[Finding], fail_on: str = "any") -> int:
     """Compute the process exit code for a scan, gated by severity threshold.
