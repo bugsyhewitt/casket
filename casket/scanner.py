@@ -304,6 +304,44 @@ def filter_by_epss(
     return kept
 
 
+def filter_by_cvss_floor(
+    findings: list[Finding], min_cvss: float | None = None
+) -> list[Finding]:
+    """Drop CVE findings whose numeric CVSS base score is below ``min_cvss``.
+
+    The qualitative severity band (``critical``/``high``/…) maps a *range* of
+    CVSS scores to one bucket, so ``--min-severity high`` keeps every CVE scored
+    7.0-10.0 — a 7.0 and a 9.8 are both ``high`` even though the 9.8 is
+    materially more urgent. ``--cvss-floor`` is the *numeric* knob: it keeps
+    only CVE findings whose ``cvss_score`` is at or above the threshold, so an
+    operator can carve any cutoff inside a band (e.g. only score >= 7.5).
+
+      - ``None`` (the default / flag absent): return every finding unchanged.
+      - a float in ``[0.0, 10.0]``: keep every **non-CVE** finding (creds /
+        misconfig carry no CVSS score and are a different class of problem),
+        and keep a CVE finding only if its ``cvss_score`` is present *and* at
+        or above the threshold.
+
+    The "drop CVEs without a score" posture matches ``--min-epss``: an explicit
+    ``--cvss-floor`` is a request to see only CVEs that clear a numeric bar,
+    so a CVE whose OSV record carries no scorable CVSS vector (severity then
+    came from the record's ``database_specific`` string or the conservative
+    default — see ``CVE severity`` in the README) does not clear it.
+    creds/misconfig findings always survive an explicit floor.
+    """
+    if min_cvss is None:
+        return list(findings)
+    kept: list[Finding] = []
+    for f in findings:
+        if f.category != "cve":
+            kept.append(f)
+            continue
+        score = f.detail.get("cvss_score")
+        if isinstance(score, (int, float)) and score >= min_cvss:
+            kept.append(f)
+    return kept
+
+
 def _vex_identifiers(finding: Finding) -> list[str]:
     """Every identifier a VEX statement could reference this CVE finding by.
 

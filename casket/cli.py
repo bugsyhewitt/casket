@@ -31,6 +31,7 @@ from casket.scanner import (
     SUPPRESS_SEVERITY_CHOICES,
     component_stats,
     exit_code,
+    filter_by_cvss_floor,
     filter_by_ecosystem,
     filter_by_epss,
     filter_by_severity,
@@ -66,6 +67,29 @@ def _epss_threshold(value: str) -> float:
     if not (0.0 <= f <= 1.0):
         raise argparse.ArgumentTypeError(
             f"EPSS threshold {f} out of range: expected a probability in [0.0, 1.0]"
+        )
+    return f
+
+
+def _cvss_floor(value: str) -> float:
+    """argparse type for --cvss-floor: a CVSS base score in ``[0.0, 10.0]``.
+
+    CVSS base scores are bounded ``0.0-10.0`` (every CVSS version: v2, v3.x,
+    v4.0). A threshold outside that range is a user error — a value > 10.0
+    would silently suppress every CVE — so we raise a clean argparse error
+    rather than accept it. The range is closed at both ends: ``0.0`` reports
+    every scored CVE (info-band 0.0 included), ``10.0`` keeps only the
+    most-severe ``critical`` findings.
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"invalid CVSS floor {value!r}: expected a number in [0.0, 10.0]"
+        )
+    if not (0.0 <= f <= 10.0):
+        raise argparse.ArgumentTypeError(
+            f"CVSS floor {f} out of range: expected a base score in [0.0, 10.0]"
         )
     return f
 
@@ -167,6 +191,21 @@ def build_parser() -> argparse.ArgumentParser:
             "probability, 0.0-1.0) is at this threshold or higher. Enriches "
             "every CVE finding with its EPSS score from FIRST.org (cached, "
             "read-only) and prunes the rest. creds/misconfig findings are "
+            "unaffected. Omitting the flag reports every finding (default)."
+        ),
+    )
+    parser.add_argument(
+        "--cvss-floor",
+        type=_cvss_floor,
+        default=None,
+        metavar="SCORE",
+        help=(
+            "report only CVE findings whose numeric CVSS base score (0.0-10.0) "
+            "is at this threshold or higher. Where --min-severity is a band "
+            "floor (a 7.0 and a 9.8 are both 'high'), this is a numeric floor "
+            "that can carve any cutoff inside a band. CVE findings whose OSV "
+            "record carries no scorable CVSS vector are pruned by an explicit "
+            "floor (matching --min-epss). creds/misconfig findings are "
             "unaffected. Omitting the flag reports every finding (default)."
         ),
     )
@@ -437,6 +476,12 @@ def main(argv: list[str] | None = None) -> int:
     # so what fails the build matches what the operator sees. Absent (the
     # default), it is a no-op. creds/misconfig findings are never pruned by it.
     findings = filter_by_epss(findings, args.min_epss)
+    # --cvss-floor prunes CVE findings by numeric CVSS base score, a finer knob
+    # than --min-severity's band floor (a 7.0 and a 9.8 are both "high"). Like
+    # --min-epss it shapes the *reported* set before the gate / diff, so what
+    # fails the build matches what the operator sees. Absent (the default), it
+    # is a no-op. creds/misconfig findings are never pruned by it.
+    findings = filter_by_cvss_floor(findings, args.cvss_floor)
     # --vex prunes CVE findings the operator's OpenVEX document triaged as
     # not_affected / fixed. Like the severity / EPSS filters it shapes the
     # *reported* set before the gate / diff, so a triaged-away CVE neither

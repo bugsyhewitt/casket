@@ -65,6 +65,7 @@ casket --image REF
        [--min-severity {all,critical,high,medium,low,info}]
        [--suppress-severity {critical,high,medium,low,info}]
        [--min-epss PROBABILITY]
+       [--cvss-floor SCORE]
        [--vex VEX.json] [--vex-max-age DAYS]
        [--suppress-ecosystem ECOSYSTEM]
        [--compare BASELINE.json] [--diff-format {json,h1md}]
@@ -170,8 +171,8 @@ casket --image ./myapp.tar --checks all --suppress-severity high
 | `--suppress-severity medium --suppress-severity low` | drop the `medium`/`low` middle; keep critical/high/info |
 
 - Applies to **every** finding category (creds / cve / misconfig all carry a
-  severity), unlike the CVE-only `--min-epss` / `--vex` / `--suppress-ecosystem`
-  filters.
+  severity), unlike the CVE-only `--min-epss` / `--cvss-floor` / `--vex` /
+  `--suppress-ecosystem` filters.
 - A finding with an unrecognised severity is never muted by it (an unknown band
   is never silently hidden).
 - Like `--min-severity` / `--min-epss` / `--vex` / `--suppress-ecosystem`, the
@@ -239,6 +240,49 @@ image's CVEs resolve in **one** batched request, and every result is cached to
 with no cached score simply carry no EPSS field (and are pruned by an explicit
 `--min-epss`). A network failure degrades the same way — never a crash, and the
 miss is left uncached so a later online run retries.
+
+### Numeric CVSS cutoffs with `--cvss-floor`
+
+`--min-severity high` keeps every CVE scored 7.0-10.0 — a 7.0 and a 9.8 are
+both `high` even though the 9.8 is materially more urgent. The qualitative
+band is a *range*; sometimes you want the *number*. `--cvss-floor SCORE`
+reports only CVE findings whose `cvss_score` is at or above the threshold, so
+an operator can carve any cutoff inside (or across) a band — e.g. "only
+critical-or-near-critical: score >= 8.5".
+
+```bash
+# report only CVE findings whose CVSS base score is >= 7.5
+casket --image ./myapp.tar --checks cves --cvss-floor 7.5
+
+# stack with the other filters: high+ that are also >= 8.5 AND >= 10% likely
+casket --image ./myapp.tar --checks all \
+       --min-severity high --cvss-floor 8.5 --min-epss 0.1
+```
+
+Behaviour and guarantees:
+
+- The threshold is a CVSS base score and must be in `[0.0, 10.0]` (the bounds
+  of every CVSS version: v2, v3.x, v4.0). Anything else is a clean argument
+  error, not a traceback.
+- The filter applies to **CVE findings only**. Leaked credentials and
+  misconfigurations have no CVSS score (they're a different class of problem)
+  and are *never* pruned by `--cvss-floor`.
+- A CVE finding whose OSV record carries **no scorable CVSS vector** (severity
+  then came from the record's `database_specific` string or the conservative
+  default — see [CVE severity](#cve-severity)) does not clear an explicit
+  floor and is pruned, matching `--min-epss`'s posture. Without the flag,
+  unscored CVEs simply omit the `cvss_score` key (existing output stays
+  byte-compatible).
+- Like the other report filters, `--cvss-floor` shapes the **reported** set
+  *before* the `--fail-on` gate (and `--compare` diff) run, so the build
+  outcome stays consistent with what you actually see. The `finding_count` in
+  JSON output reflects the filtered set.
+- Composes with `--min-severity` as an independent stage: `--min-severity` is
+  a *band* floor; `--cvss-floor` is a *numeric* floor. The intersection is
+  applied — a finding must clear both.
+- Network-free: the score is already on the finding (computed by `casket`
+  from the OSV record's CVSS vector during the severity lookup); the filter
+  adds zero requests.
 
 ### Suppressing triaged CVEs with VEX and `--vex`
 
