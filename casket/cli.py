@@ -34,6 +34,7 @@ from casket.scanner import (
     filter_by_cvss_floor,
     filter_by_ecosystem,
     filter_by_epss,
+    filter_by_purl,
     filter_by_severity,
     filter_by_severity_band,
     filter_by_vex,
@@ -253,6 +254,27 @@ def build_parser() -> argparse.ArgumentParser:
             "reported set before the gate/diff, so a suppressed CVE neither "
             "shows up nor trips the exit-code gate. Omitting the flag reports "
             "every finding (default)."
+        ),
+    )
+    parser.add_argument(
+        "--purl-filter",
+        action="append",
+        default=None,
+        metavar="PATTERN",
+        help=(
+            "keep only CVE findings whose Package URL matches this glob pattern; "
+            "repeatable (multiple patterns OR). Where --suppress-ecosystem mutes "
+            "a whole ecosystem, this is a *selection* knob at the package level "
+            "— e.g. --purl-filter 'pkg:pypi/*' to keep only PyPI app-dependency "
+            "CVEs, or --purl-filter 'pkg:*/openssl@*' to focus on openssl across "
+            "every distro. Patterns use fnmatch glob semantics (*, ?, [seq]) and "
+            "match case-insensitively against the synthesized purl "
+            "(pkg:<type>/<name>@<version>). Only CVE findings carry package "
+            "identity, so creds/misconfig findings are unaffected. A CVE finding "
+            "missing ecosystem/package/version produces no purl and is pruned by "
+            "an explicit filter (matching --cvss-floor / --min-epss posture). "
+            "Like the other report filters it shapes the reported set before the "
+            "gate/diff. Omitting the flag reports every finding (default)."
         ),
     )
     parser.add_argument(
@@ -498,6 +520,15 @@ def main(argv: list[str] | None = None) -> int:
         set(args.suppress_ecosystem) if args.suppress_ecosystem else None
     )
     findings = filter_by_ecosystem(findings, ecosystem_suppressed)
+    # --purl-filter is a *selection* knob (vs --suppress-ecosystem's mute): keep
+    # only CVE findings whose synthesized purl matches one of the operator's
+    # glob patterns, so an operator can focus a scan on a specific package set
+    # (e.g. only app deps under pkg:pypi/*, or only openssl across distros).
+    # Like the other report filters it shapes the *reported* set before the
+    # gate / diff, so what fails the build matches what the operator sees.
+    # Absent (the default) it is a no-op; creds/misconfig findings are never
+    # pruned by it.
+    findings = filter_by_purl(findings, args.purl_filter)
     # --suppress-severity mutes operator-named severity bands *exactly* (unlike
     # --min-severity's floor), so an arbitrary range can be carved out — e.g.
     # keep critical/high + info, drop medium/low. Applies to every category. Like
