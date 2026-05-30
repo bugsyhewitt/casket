@@ -441,6 +441,97 @@ def filter_by_ecosystem(
     return kept
 
 
+# Map OSV ecosystem names to the canonical purl type
+# (https://github.com/package-url/purl-spec/blob/master/PURL-TYPES.rst).
+# Unknown ecosystems fall back to a lowercased, alphanumeric-stripped form so
+# a future ecosystem still produces a stable, matchable purl rather than no purl.
+_ECOSYSTEM_TO_PURL_TYPE = {
+    "pypi": "pypi",
+    "debian": "deb",
+    "alpine": "apk",
+    "red hat": "rpm",
+}
+
+
+def _purl_for_finding(finding: Finding) -> str | None:
+    """Synthesize a Package URL for a CVE finding, or None if not derivable.
+
+    Builds ``pkg:<type>/<name>@<version>`` from the finding's ecosystem,
+    package, and installed_version. Returns ``None`` for non-CVE findings or
+    when any field is missing — these can't be purl-matched so the caller
+    treats them as "no purl" and the filter's posture (drop on explicit
+    request, matching --min-epss / --cvss-floor) decides what to do.
+    """
+    if finding.category != "cve":
+        return None
+    detail = finding.detail
+    eco = detail.get("ecosystem")
+    name = detail.get("package")
+    version = detail.get("installed_version")
+    if not (isinstance(eco, str) and isinstance(name, str)
+            and isinstance(version, str) and eco and name and version):
+        return None
+    eco_key = eco.lower()
+    purl_type = _ECOSYSTEM_TO_PURL_TYPE.get(eco_key)
+    if purl_type is None:
+        # Defensive fallback: a future ecosystem still gets a stable purl
+        # (lowercased, alphanumeric-only) rather than vanishing under any filter.
+        purl_type = "".join(c for c in eco_key if c.isalnum()) or "unknown"
+    return f"pkg:{purl_type}/{name}@{version}"
+
+
+def filter_by_purl(
+    findings: list[Finding], patterns: list[str] | None = None
+) -> list[Finding]:
+    """Keep only CVE findings whose purl matches at least one ``patterns`` glob.
+
+    ``--suppress-ecosystem`` mutes a whole OSV ecosystem; ``--purl-filter`` is
+    the *selection* knob at the package level — keep only the CVEs whose
+    installed component matches a Package URL glob. The motivating case the
+    ecosystem-level knob cannot express: "only show CVEs against my application
+    dependencies under ``pkg:pypi/myapp-*``" or "only show CVEs against
+    openssl regardless of distro" (``pkg:*/openssl@*``). Patterns use
+    ``fnmatch`` glob semantics (``*``, ``?``, ``[seq]``); matching is
+    case-insensitive so an operator needn't remember the canonical lowercased
+    purl type spelling.
+
+      - ``None`` / empty list (no ``--purl-filter`` flag): return every finding
+        unchanged (no-op, casket's original behaviour).
+      - otherwise: keep every **non-CVE** finding (creds / misconfig carry no
+        package identity and are a different class of problem — purl is a
+        package addressing scheme), and keep a CVE finding only when its
+        synthesized purl matches at least one pattern. Multiple patterns OR.
+
+    Synthesis follows the purl spec's canonical types:
+    ``PyPI -> pkg:pypi/...``, ``Debian -> pkg:deb/...``, ``Alpine -> pkg:apk/...``,
+    ``Red Hat -> pkg:rpm/...``. A CVE finding missing ecosystem / package /
+    installed_version produces no purl and so cannot match any pattern — it is
+    pruned by an explicit filter (matching ``--cvss-floor`` / ``--min-epss``
+    posture: an explicit selection bar requires the data to evaluate it).
+
+    Like the other report filters this shapes the *reported* set before the
+    exit-code gate / ``--compare`` diff runs, so what fails the build matches
+    what the operator sees.
+    """
+    if not patterns:
+        return list(findings)
+    import fnmatch
+
+    lowered_patterns = [p.lower() for p in patterns]
+    kept: list[Finding] = []
+    for f in findings:
+        if f.category != "cve":
+            kept.append(f)
+            continue
+        purl = _purl_for_finding(f)
+        if purl is None:
+            continue
+        purl_lower = purl.lower()
+        if any(fnmatch.fnmatchcase(purl_lower, p) for p in lowered_patterns):
+            kept.append(f)
+    return kept
+
+
 def filter_by_severity_band(
     findings: list[Finding], suppressed: set[str] | None = None
 ) -> list[Finding]:

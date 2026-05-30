@@ -68,6 +68,7 @@ casket --image REF
        [--cvss-floor SCORE]
        [--vex VEX.json] [--vex-max-age DAYS]
        [--suppress-ecosystem ECOSYSTEM]
+       [--purl-filter PATTERN]
        [--compare BASELINE.json] [--diff-format {json,h1md}]
        [--group-by-package]
        [--stats]
@@ -408,6 +409,70 @@ casket --image ./myapp.tar --checks all --suppress-ecosystem Debian --min-epss 0
 - This is a *suppression* knob, not a *selection* one: to scan only certain
   check types use `--checks`; to keep only certain ecosystems, suppress the rest.
 - Omit the flag (the default) to report every finding regardless of ecosystem.
+
+### Selecting CVEs by package with `--purl-filter`
+
+`--suppress-ecosystem` is the *mute* knob at the ecosystem level — drop a whole
+distro's CVE noise. `--purl-filter` is the **selection** knob at the package
+level — keep only the CVE findings whose installed component matches a
+[Package URL](https://github.com/package-url/purl-spec) glob, so an operator
+can carve a focused scan around the exact packages they care about:
+
+```bash
+# keep only application-dependency CVEs (every PyPI package), drop the OS noise
+casket --image ./myapp.tar --checks cves --purl-filter 'pkg:pypi/*'
+
+# focus on openssl across every distro (Debian, RHEL, Alpine all matched at once)
+casket --image ./myapp.tar --checks cves --purl-filter 'pkg:*/openssl@*'
+
+# repeatable: multiple patterns OR — keep PyPI app deps and any openssl
+casket --image ./myapp.tar --checks cves \
+  --purl-filter 'pkg:pypi/*' --purl-filter 'pkg:*/openssl@*'
+
+# pin to a specific version range (fnmatch glob)
+casket --image ./myapp.tar --checks cves --purl-filter 'pkg:pypi/requests@2.*'
+```
+
+`casket` synthesizes each CVE finding's purl from its
+`(ecosystem, package, installed_version)` and matches it against the operator's
+patterns. The mapping follows the
+[purl-spec canonical types](https://github.com/package-url/purl-spec/blob/master/PURL-TYPES.rst):
+
+| ecosystem | purl type | example |
+|---|---|---|
+| PyPI | `pypi` | `pkg:pypi/requests@2.19.0` |
+| Debian | `deb` | `pkg:deb/openssl@3.0.7-1` |
+| Alpine | `apk` | `pkg:apk/busybox@1.36.0-r0` |
+| Red Hat | `rpm` | `pkg:rpm/openssl@1:3.0.7-6.el9` |
+
+Behaviour and guarantees:
+
+- Patterns use [`fnmatch`](https://docs.python.org/3/library/fnmatch.html) glob
+  semantics (`*`, `?`, `[seq]`), the same family the shell uses. Multiple
+  `--purl-filter` patterns OR (a finding survives if **any** pattern matches),
+  so the flag is repeatable.
+- Matching is **case-insensitive** so an operator needn't remember the
+  canonical lowercased purl type spelling (`pkg:PyPI/...` and `pkg:pypi/...`
+  both match).
+- Only **CVE** findings carry package identity, so `creds` and `misconfig`
+  findings are *never* pruned by this flag — purl is a package addressing
+  scheme, and credential/misconfiguration noise is a different question.
+- A CVE finding missing `ecosystem`, `package`, or `installed_version` produces
+  no purl and so cannot match any pattern — it is pruned by an explicit
+  `--purl-filter` (matching `--cvss-floor` / `--min-epss` posture: an explicit
+  selection bar requires the data to evaluate it). Without the flag, every
+  finding still surfaces.
+- Like `--min-severity` / `--min-epss` / `--vex` / `--suppress-ecosystem`, the
+  filter shapes the **reported** set *before* the `--fail-on` gate and
+  `--compare` diff, so a CVE pruned by purl neither shows up in the report nor
+  trips the build gate — what fails the build matches what you see. The
+  `finding_count` in JSON output reflects the filtered set.
+- Composes with the other filters: `--purl-filter 'pkg:pypi/*' --min-severity high`
+  reports only PyPI app-dependency CVEs that are also `high+`.
+- This is a *selection* knob, not a *suppression* one. To mute a noisy
+  ecosystem use `--suppress-ecosystem`; to keep only certain packages, select
+  them with `--purl-filter`.
+- Omit the flag (the default) to report every finding regardless of package.
 
 ### Diffing two scans with `--compare`
 
