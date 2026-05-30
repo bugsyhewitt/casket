@@ -1150,3 +1150,173 @@ def test_cves_finding_omits_cvss_fields_when_unscored(_isolate_osv_cache):
     assert "cvss_score" not in f.detail
     assert "cvss_version" not in f.detail
     assert "cvss_vector" not in f.detail
+
+
+# ---------------------------------------------------------------------------
+# CVSS v4.0 Supplemental Metric Group surfacing (FIRST spec section 2.4).
+# ---------------------------------------------------------------------------
+
+
+def test_cvss4_supplemental_metrics_decodes_all_six():
+    """All six supplemental metrics decode to spec-defined snake_case labels."""
+    vector = (
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+        "/S:P/AU:Y/R:I/V:C/RE:H/U:Red"
+    )
+    assert cves._cvss4_supplemental_metrics(vector) == {
+        "safety": "present",
+        "automatable": "yes",
+        "recovery": "irrecoverable",
+        "value_density": "concentrated",
+        "response_effort": "high",
+        "provider_urgency": "red",
+    }
+
+
+def test_cvss4_supplemental_metrics_preserves_spec_order():
+    """The result preserves the FIRST spec's section ordering, not insertion order."""
+    # Author the vector with supplemental metrics in reverse spec order. The
+    # output must still be in spec order (Safety, Automatable, Recovery,
+    # Value Density, Response Effort, Provider Urgency) for diff-stable JSON.
+    vector = (
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+        "/U:Amber/RE:L/V:D/R:A/AU:N/S:N"
+    )
+    keys = list(cves._cvss4_supplemental_metrics(vector).keys())
+    assert keys == [
+        "safety",
+        "automatable",
+        "recovery",
+        "value_density",
+        "response_effort",
+        "provider_urgency",
+    ]
+
+
+def test_cvss4_supplemental_metrics_omits_undefined_and_absent():
+    """``X`` (Not Defined) values and absent metrics are omitted, not surfaced."""
+    # Base-only vector — no supplemental metrics at all -> empty dict.
+    base_only = (
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+    )
+    assert cves._cvss4_supplemental_metrics(base_only) == {}
+    # Mixed: only safety and recovery defined; provider_urgency explicit X.
+    mixed = (
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+        "/S:N/R:U/U:X"
+    )
+    assert cves._cvss4_supplemental_metrics(mixed) == {
+        "safety": "negligible",
+        "recovery": "user",
+    }
+
+
+def test_cvss4_supplemental_metrics_skips_unrecognised_values():
+    """A supplemental metric carrying a non-spec value is silently dropped."""
+    vector = (
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+        "/S:Z/AU:Y"  # S:Z is not in the spec; AU:Y is.
+    )
+    # Only the valid AU survives — bad values never produce a guessed label.
+    assert cves._cvss4_supplemental_metrics(vector) == {"automatable": "yes"}
+
+
+def test_cves_finding_surfaces_v4_supplemental_metrics(_isolate_osv_cache):
+    """End-to-end: a v4-scored CVE finding carries the decoded supplemental block."""
+    img = load_tarball(fixture_path("old-package.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    vector = (
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+        "/S:P/AU:Y/U:Red"
+    )
+    client.seed(
+        "PyPI",
+        "requests",
+        "2.19.0",
+        [
+            {
+                "id": "GHSA-suppl-test",
+                "aliases": ["CVE-9999-0001"],
+                "summary": "v4 supplemental surfacing e2e",
+                "severity": [{"type": "CVSS_V4", "score": vector}],
+            }
+        ],
+    )
+    findings = cves.run(img, osv_client=client)
+    assert findings
+    f = findings[0]
+    # Base CVSS surfacing still works (sanity).
+    assert f.detail["cvss_version"] == "4.0"
+    assert f.detail["cvss_vector"] == vector
+    # Supplemental block is present, decoded, and in spec order.
+    assert f.detail["cvss_supplemental"] == {
+        "safety": "present",
+        "automatable": "yes",
+        "provider_urgency": "red",
+    }
+    # Block flattens to the top level of the JSON finding (consumer surface).
+    from casket import findings as findings_mod
+
+    report = findings_mod.report_dict([f], image="img")
+    entry = report["findings"][0]
+    assert entry["cvss_supplemental"] == {
+        "safety": "present",
+        "automatable": "yes",
+        "provider_urgency": "red",
+    }
+
+
+def test_cves_finding_omits_v4_supplemental_when_base_only(_isolate_osv_cache):
+    """A v4 vector with no supplemental metrics adds no ``cvss_supplemental`` key."""
+    img = load_tarball(fixture_path("old-package.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    # Base-only v4 vector — scores fine, but carries no Supplemental Metric
+    # Group, so the block must be omitted (keeps default output byte-identical).
+    base_only = (
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+    )
+    client.seed(
+        "PyPI",
+        "requests",
+        "2.19.0",
+        [
+            {
+                "id": "GHSA-baseonly",
+                "aliases": ["CVE-9999-0002"],
+                "summary": "v4 base-only — no supplemental",
+                "severity": [{"type": "CVSS_V4", "score": base_only}],
+            }
+        ],
+    )
+    findings = cves.run(img, osv_client=client)
+    assert findings
+    f = findings[0]
+    assert f.detail["cvss_version"] == "4.0"
+    assert "cvss_supplemental" not in f.detail
+
+
+def test_cves_finding_omits_v4_supplemental_when_v3_vector(_isolate_osv_cache):
+    """A v3-scored finding carries no ``cvss_supplemental`` (v3 has no such group)."""
+    img = load_tarball(fixture_path("old-package.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    # A v3 vector with metric keys that *look* like v4 supplemental ones must
+    # still produce no supplemental block — the surfacing is version-gated.
+    v3_vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    client.seed(
+        "PyPI",
+        "requests",
+        "2.19.0",
+        [
+            {
+                "id": "GHSA-v3only",
+                "aliases": ["CVE-9999-0003"],
+                "summary": "v3 vector — no v4 supplemental surfacing",
+                "severity": [{"type": "CVSS_V3", "score": v3_vector}],
+            }
+        ],
+    )
+    findings = cves.run(img, osv_client=client)
+    assert findings
+    f = findings[0]
+    assert f.detail["cvss_version"] == "3.x"
+    assert "cvss_supplemental" not in f.detail

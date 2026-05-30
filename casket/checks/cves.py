@@ -566,6 +566,18 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
                 detail["cvss_score"] = score
                 detail["cvss_version"] = version
                 detail["cvss_vector"] = vector
+                # v4.0 Supplemental Metric Group surfacing — extra extrinsic
+                # triage context (Safety, Automatable, Recovery, Value Density,
+                # Response Effort, Provider Urgency) that does NOT affect the
+                # base score but tells an operator *whether* a finding warrants
+                # priority within its band. Omitted entirely when the source
+                # vector carries no supplemental metrics (the common base-only
+                # case), so default output is byte-identical. Only v4.0 carries
+                # a supplemental group; v2/v3 have no such metrics.
+                if version == "4.0":
+                    supplemental = _cvss4_supplemental_metrics(vector)
+                    if supplemental:
+                        detail["cvss_supplemental"] = supplemental
             refs = _references_from_osv(vuln)
             if refs.get("fix"):
                 detail["fix_urls"] = refs["fix"]
@@ -1388,6 +1400,89 @@ def _severity_from_cvss_vector(vector: str) -> str | None:
         return None
     score, _version = result
     return _cvss_score_to_severity(score)
+
+
+# CVSS v4.0 Supplemental Metric Group (FIRST CVSS v4.0 spec section 2.4).
+# These metrics convey *additional extrinsic context* about a vulnerability
+# (operator-facing triage signal — Safety, recovery effort, provider urgency)
+# but **do not affect the base score**, so casket parses-and-ignores them when
+# computing the band. Surfacing them as decoded labels in finding ``detail``
+# gives an operator triage context the band alone can't carry: a base score of
+# 7.5 with ``safety: present`` (a physical-harm risk) is qualitatively
+# different from a 7.5 with ``safety: negligible``, and ``provider_urgency:
+# red`` is a vendor's own "patch now" signal that the base score doesn't
+# encode. Keys are omitted individually when the source metric is absent or
+# ``X`` (Not Defined), and the whole block is omitted when no supplemental
+# metric is present — so a base-only vector adds nothing to the report and the
+# output stays byte-identical to the pre-surfacing default. Only applies to
+# v4.0 vectors; v2/v3 have no supplemental metric group.
+#
+# Decoded labels follow the FIRST spec's documented prose terms verbatim
+# (lower-cased) so operators can grep them against the spec without an
+# additional lookup table.
+_CVSS4_SUPPLEMENTAL_DECODE: dict[str, dict[str, str]] = {
+    # Safety (S): impact on human Safety per IEC 61508. Spec values:
+    #   X = Not Defined, N = Negligible, P = Present.
+    "S": {"N": "negligible", "P": "present"},
+    # Automatable (AU): can the attack be automated across many targets?
+    #   X = Not Defined, N = No, Y = Yes.
+    "AU": {"N": "no", "Y": "yes"},
+    # Recovery (R): system recoverability after exploit.
+    #   X = Not Defined, A = Automatic, U = User, I = Irrecoverable.
+    "R": {"A": "automatic", "U": "user", "I": "irrecoverable"},
+    # Value Density (V): how dense is the resource controlled by the target?
+    #   X = Not Defined, D = Diffuse, C = Concentrated.
+    "V": {"D": "diffuse", "C": "concentrated"},
+    # Vulnerability Response Effort (RE): effort to deploy the fix.
+    #   X = Not Defined, L = Low, M = Moderate, H = High.
+    "RE": {"L": "low", "M": "moderate", "H": "high"},
+    # Provider Urgency (U): vendor-asserted patch urgency (TLP-coloured).
+    #   X = Not Defined, Clear/Green/Amber/Red.
+    "U": {
+        "CLEAR": "clear", "GREEN": "green",
+        "AMBER": "amber", "RED": "red",
+    },
+}
+
+# Stable output-key order for the supplemental block (matches FIRST's spec
+# section ordering: Safety, Automatable, Recovery, Value Density, Response
+# Effort, Provider Urgency). Stable ordering keeps the JSON/SARIF surface
+# diffable run-to-run.
+_CVSS4_SUPPLEMENTAL_ORDER: tuple[tuple[str, str], ...] = (
+    ("S", "safety"),
+    ("AU", "automatable"),
+    ("R", "recovery"),
+    ("V", "value_density"),
+    ("RE", "response_effort"),
+    ("U", "provider_urgency"),
+)
+
+
+def _cvss4_supplemental_metrics(vector: str) -> dict[str, str]:
+    """Extract decoded CVSS v4.0 Supplemental Metric Group values from a vector.
+
+    Returns a ``{snake_case_label: decoded_value}`` dict in stable spec order.
+    A metric absent from the vector, set to ``X`` (Not Defined), or carrying an
+    unrecognised value is omitted — only operator-actionable values surface.
+    The result is empty (``{}``) when the vector carries no supplemental
+    metrics at all, which is the common case for base-only OSV records. Only
+    meaningful for v4.0 vectors; callers should gate on the version label.
+
+    The supplemental metric group does NOT affect the base score (FIRST CVSS
+    v4.0 spec section 2.4), so this is a pure surfacing helper — no scoring
+    side effects.
+    """
+    metrics = _cvss_vector_metrics(vector)
+    out: dict[str, str] = {}
+    for raw_key, label in _CVSS4_SUPPLEMENTAL_ORDER:
+        raw = metrics.get(raw_key)
+        if not raw or raw == "X":
+            continue
+        decoded = _CVSS4_SUPPLEMENTAL_DECODE[raw_key].get(raw)
+        if decoded is None:
+            continue
+        out[label] = decoded
+    return out
 
 
 def _cvss_from_osv(vuln: dict) -> tuple[float, str, str] | None:
