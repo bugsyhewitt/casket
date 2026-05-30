@@ -20,6 +20,7 @@ from casket.compare import (
     diff_reports,
     load_baseline_report,
     regression_count,
+    render_diff_h1md,
     render_diff_json,
 )
 from casket.findings import render, report_dict
@@ -297,6 +298,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--diff-format",
+        choices=["json", "h1md"],
+        default="json",
+        help=(
+            "compare mode only: pick the diff output format. 'json' (default) "
+            "emits the canonical machine-readable diff document (what "
+            "downstream tools / future --compare consumers parse); 'h1md' emits "
+            "a human-readable Markdown summary of added/removed/changed/"
+            "unchanged findings, sized for a PR comment, Slack snippet, or "
+            "build-log artifact. The diff content and the exit-code gate (new "
+            "findings -> exit 1) are identical across formats; only the "
+            "serialization changes. Ignored without --compare."
+        ),
+    )
+    parser.add_argument(
         "--token",
         metavar="TOKEN",
         help="remote mode: static bearer token (sent as Authorization: Bearer)",
@@ -482,7 +498,14 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         current = report_dict(findings, image=args.image, scan_stats=scan_stats)
         diff = diff_reports(baseline, current)
-        print(render_diff_json(diff))
+        # --diff-format picks the diff serialization. JSON is the canonical
+        # machine form (the historical default, what downstream tools consume);
+        # h1md is the operator-facing Markdown summary for PR comments / Slack.
+        # The diff content and the exit-code gate are identical across formats.
+        if args.diff_format == "h1md":
+            print(render_diff_h1md(diff))
+        else:
+            print(render_diff_json(diff))
         # Exit 1 iff this build introduced new findings versus the baseline.
         return 1 if regression_count(diff) > 0 else 0
 

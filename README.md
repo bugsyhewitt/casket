@@ -67,7 +67,7 @@ casket --image REF
        [--min-epss PROBABILITY]
        [--vex VEX.json] [--vex-max-age DAYS]
        [--suppress-ecosystem ECOSYSTEM]
-       [--compare BASELINE.json]
+       [--compare BASELINE.json] [--diff-format {json,h1md}]
        [--group-by-package]
        [--stats]
        [--output-json-summary]
@@ -421,6 +421,55 @@ only ever considers high+ findings on both sides). `--fail-on` is ignored in
 compare mode — the diff gates on *new* findings instead, which is the
 actionable CI signal. The baseline must be a casket `--format json` report; any
 other file produces a clean exit-2 error rather than a traceback.
+
+#### Human-readable diff with `--diff-format h1md`
+
+The JSON diff above is the canonical machine form — but for PR comments, Slack
+snippets, or build-log artefacts the operator usually wants something they can
+read at a glance. `--diff-format h1md` re-renders the same diff as Markdown:
+
+```bash
+casket --image ./myapp:candidate.tar --checks all \
+       --compare baseline.json --diff-format h1md
+```
+
+Produces a structured summary, sorted worst-severity-first within each bucket:
+
+```markdown
+# casket scan diff
+
+- **baseline:** `./myapp:released.tar`
+- **current:** `./myapp:candidate.tar`
+
+**Summary:** added `1`, removed `0`, changed `1`, unchanged `42`
+
+## Added (1)
+
+_New findings introduced by this build (regressions)._
+
+- **[CRITICAL]** `aws_secret_key` — `app/.env`
+
+## Removed (0)
+
+_None._
+
+## Changed (1)
+
+_Same finding, severity moved (re-scored)._
+
+- **[MEDIUM -> CRITICAL]** `CVE-2024-00123` — `urllib3@1.26.0` [PyPI]
+
+## Unchanged (42)
+
+_42 finding(s) carry over from the baseline unchanged._
+```
+
+`unchanged` collapses to a count line on purpose — the diff exists to surface
+deltas, not re-render the stable wall. `--diff-format json` is the default, so
+existing `--compare` consumers (and any tooling that parses the diff JSON) keep
+working unchanged. The exit-code gate (new findings → exit 1) is identical
+across formats; only the serialization changes. Outside `--compare` the flag is
+silently inert.
 
 ### Component-count inventory with `--stats`
 
