@@ -178,8 +178,11 @@ def test_parse_alpine_release_extracts_major_minor():
 
 def test_parse_alpine_release_none_on_garbage():
     assert cves._parse_alpine_release("") is None
-    assert cves._parse_alpine_release("edge\n") is None
     assert cves._parse_alpine_release("not a version") is None
+    # ``edge`` carries no numeric MAJOR.MINOR so the legacy
+    # ``_parse_alpine_release`` helper still returns None — edge channel
+    # detection lives in ``_parse_alpine_release_candidates`` instead.
+    assert cves._parse_alpine_release("edge\n") is None
 
 
 def test_detect_alpine_ecosystem_scans_cross_layer():
@@ -228,6 +231,203 @@ def test_cves_alpine_bare_fallback_still_resolves_seed_db(_isolate_osv_cache):
     # alpine-image has no etc/alpine-release, so the release-qualified candidate
     # is None and casket falls back to bare "Alpine" — the bundled seed DB path.
     # This is the pre-existing behaviour, preserved unchanged.
+    img = load_tarball(fixture_path("alpine-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    findings = cves.run(img, osv_client=client)
+    by_pkg = {f.detail["package"] for f in findings}
+    assert "busybox" in by_pkg
+
+
+# ---------------------------------------------------------------------------
+# Alpine edge channel resolution tests (Rotation 33)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_alpine_release_candidates_numbered():
+    # A plain numbered release yields a single ``Alpine:vMAJOR.MINOR``
+    # candidate — no edge in the list.
+    assert cves._parse_alpine_release_candidates("3.18.4\n") == ["Alpine:v3.18"]
+    assert cves._parse_alpine_release_candidates("3.20.0") == ["Alpine:v3.20"]
+    assert cves._parse_alpine_release_candidates("3.19") == ["Alpine:v3.19"]
+
+
+def test_parse_alpine_release_candidates_literal_edge():
+    # The literal ``edge`` line maps to a single ``Alpine:edge`` candidate.
+    # Case-insensitive (some images uppercase).
+    assert cves._parse_alpine_release_candidates("edge\n") == ["Alpine:edge"]
+    assert cves._parse_alpine_release_candidates("EDGE") == ["Alpine:edge"]
+
+
+def test_parse_alpine_release_candidates_prerelease_suffix_yields_both():
+    # An edge build of the next numbered release (``3.20.0_alpha20240329``,
+    # ``_rc1``, ``_pre1``, ``_git…``, ``_beta1``) yields both candidates,
+    # edge first (it is the channel the image actually ships).
+    assert cves._parse_alpine_release_candidates(
+        "3.20.0_alpha20240329\n"
+    ) == ["Alpine:edge", "Alpine:v3.20"]
+    assert cves._parse_alpine_release_candidates("3.21.0_rc1") == [
+        "Alpine:edge",
+        "Alpine:v3.21",
+    ]
+    assert cves._parse_alpine_release_candidates("3.20.0_pre1") == [
+        "Alpine:edge",
+        "Alpine:v3.20",
+    ]
+    assert cves._parse_alpine_release_candidates("3.22.0_git20240212") == [
+        "Alpine:edge",
+        "Alpine:v3.22",
+    ]
+    assert cves._parse_alpine_release_candidates("3.19.0_beta1") == [
+        "Alpine:edge",
+        "Alpine:v3.19",
+    ]
+
+
+def test_parse_alpine_release_candidates_empty_on_garbage():
+    # Empty / unrecognisable lines yield an empty list — the caller still
+    # falls back to bare ``Alpine``, so behaviour is unchanged for these.
+    assert cves._parse_alpine_release_candidates("") == []
+    assert cves._parse_alpine_release_candidates("not a version") == []
+    assert cves._parse_alpine_release_candidates("\n\n") == []
+
+
+def test_parse_alpine_release_candidates_first_parseable_line_wins():
+    # Skips blank/garbage lines and uses the first parseable release.
+    text = "\n# comment-ish line\n3.18.4\n3.20.0_rc1\n"
+    assert cves._parse_alpine_release_candidates(text) == ["Alpine:v3.18"]
+
+
+def test_parse_alpine_release_back_compat_numbered_still_returns_qualifier():
+    # The legacy helper is preserved for the back-compat path; it returns
+    # just the numbered qualifier and is unaffected by the new candidates
+    # API (used by the back-compat ``_detect_alpine_ecosystem`` wrapper).
+    assert cves._parse_alpine_release("3.18.4") == "Alpine:v3.18"
+    # Pre-release suffix still strips down to the numbered prefix here —
+    # edge surfacing is the candidates helper's job.
+    assert cves._parse_alpine_release("3.20.0_alpha20240329") == "Alpine:v3.20"
+
+
+def test_detect_alpine_ecosystem_back_compat_returns_first_candidate():
+    # The back-compat ``_detect_alpine_ecosystem`` returns the first
+    # candidate from the image-level scan (or None) — same shape its only
+    # internal caller and existing tests expect.
+    img = load_tarball(fixture_path("alpine-release-image.tar"))
+    assert cves._detect_alpine_ecosystem(img) == "Alpine:v3.18"
+
+
+def test_detect_alpine_ecosystem_candidates_release_marker_absent():
+    # No ``etc/alpine-release`` → empty candidate list (caller falls back to
+    # bare ``Alpine`` only — the pre-existing behaviour, unchanged).
+    img = load_tarball(fixture_path("alpine-image.tar"))
+    assert cves._detect_alpine_ecosystem_candidates(img) == []
+
+
+def test_detect_alpine_ecosystem_candidates_numbered_release():
+    # Numbered-release image yields the single numbered candidate.
+    img = load_tarball(fixture_path("alpine-release-image.tar"))
+    assert cves._detect_alpine_ecosystem_candidates(img) == ["Alpine:v3.18"]
+
+
+def test_cves_alpine_edge_literal_resolves_via_edge_ecosystem(_isolate_osv_cache):
+    # An edge image (literal ``edge`` in etc/alpine-release) resolves CVE
+    # findings through the ``Alpine:edge`` ecosystem — proven by seeding the
+    # vuln ONLY under ``Alpine:edge`` (NOT bare ``Alpine``, NOT any numbered
+    # qualifier). This is the gap closed by this rotation: before, edge
+    # images silently fell back to bare ``Alpine`` and the seed/cache path,
+    # so live edge advisories were invisible.
+    img = load_tarball(fixture_path("alpine-edge-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    client.seed(
+        "Alpine:edge",
+        "busybox",
+        "1.36.0-r0",
+        [
+            {
+                "id": "CVE-2024-99999",
+                "aliases": ["CVE-2024-99999"],
+                "summary": "busybox edge-channel test vuln",
+                "database_specific": {"severity": "HIGH"},
+            }
+        ],
+    )
+    findings = cves.run(img, osv_client=client)
+    assert findings, "expected a CVE finding resolved via Alpine:edge"
+    f = findings[0]
+    assert f.detail["package"] == "busybox"
+    assert f.detail["cve_id"] == "CVE-2024-99999"
+    # Output ecosystem stays the stable bare ``Alpine`` tag (matches the
+    # Rotation-10 decision for the numbered case — qualifier is a query-time
+    # concern only).
+    assert f.detail["ecosystem"] == "Alpine"
+
+
+def test_cves_alpine_edge_prerelease_resolves_via_edge_first(
+    _isolate_osv_cache,
+):
+    # A pre-release-suffixed image (``3.20.0_alpha20240329``) yields BOTH
+    # ``Alpine:edge`` AND ``Alpine:v3.20`` candidates, edge-first. Seeding
+    # the vuln only under ``Alpine:edge`` proves the edge candidate is what
+    # resolves — the image's actual channel takes priority over the
+    # numbered candidate.
+    img = load_tarball(fixture_path("alpine-edge-prerelease-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    client.seed(
+        "Alpine:edge",
+        "busybox",
+        "1.36.0-r0",
+        [
+            {
+                "id": "CVE-2024-99998",
+                "aliases": ["CVE-2024-99998"],
+                "summary": "busybox prerelease-on-edge test vuln",
+                "database_specific": {"severity": "MEDIUM"},
+            }
+        ],
+    )
+    findings = cves.run(img, osv_client=client)
+    assert findings, "expected a CVE finding resolved via Alpine:edge"
+    f = findings[0]
+    assert f.detail["package"] == "busybox"
+    assert f.detail["cve_id"] == "CVE-2024-99998"
+    assert f.detail["ecosystem"] == "Alpine"
+
+
+def test_cves_alpine_edge_prerelease_falls_back_to_numbered(
+    _isolate_osv_cache,
+):
+    # The numbered ``Alpine:vMAJOR.MINOR`` candidate is queried alongside
+    # ``Alpine:edge`` for a pre-release-suffixed image, so an advisory filed
+    # only against the upcoming numbered release (NOT seeded under edge)
+    # still resolves. Proves the candidate-list ordering does not exclude
+    # the numbered fallback.
+    img = load_tarball(fixture_path("alpine-edge-prerelease-image.tar"))
+    client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
+    client.seed(
+        "Alpine:v3.20",
+        "busybox",
+        "1.36.0-r0",
+        [
+            {
+                "id": "CVE-2024-99997",
+                "aliases": ["CVE-2024-99997"],
+                "summary": "busybox numbered-fallback test vuln",
+                "database_specific": {"severity": "LOW"},
+            }
+        ],
+    )
+    findings = cves.run(img, osv_client=client)
+    assert findings, "expected a CVE finding resolved via Alpine:v3.20"
+    assert findings[0].detail["cve_id"] == "CVE-2024-99997"
+
+
+def test_cves_alpine_marker_less_image_still_uses_bare_alpine(
+    _isolate_osv_cache,
+):
+    # Regression guard for the unchanged-behaviour path: an Alpine image
+    # with no ``etc/alpine-release`` still resolves via bare ``Alpine``
+    # (the seed-DB / warm-cache fallback). This is the exact pre-existing
+    # behaviour Rotation 10 preserved — re-asserted here under the new
+    # candidate-list path to prove it didn't regress.
     img = load_tarball(fixture_path("alpine-image.tar"))
     client = OSVClient(cache_path=_isolate_osv_cache, offline=True)
     findings = cves.run(img, osv_client=client)
