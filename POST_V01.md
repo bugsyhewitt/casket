@@ -1057,9 +1057,15 @@ established pipeline — the highest-value, lowest-risk reporting knob remaining
   per CVE (one batched API call) and, longer-term, track it across runs to flag
   fast-rising threats. `--compare` (Item 16) now provides the run-to-run diff
   substrate an EPSS trend could build on.
-- **Alpine `edge` handling** — `etc/alpine-release` on edge images is non-numeric;
-  OSV has no `Alpine:edge`. Currently falls back to bare `Alpine` (fine, but
-  could log a note).
+- **Alpine `edge` handling** — ✅ IMPLEMENTED (Phase 2, Rotation 33). OSV.dev
+  *does* publish under `Alpine:edge`. `_parse_alpine_release_candidates` now
+  recognises both the literal `edge` marker (→ `["Alpine:edge"]`) and a
+  numbered version carrying a pre-release suffix like `3.20.0_alpha20240329` /
+  `_rc1` / `_pre1` / `_git…` / `_beta1` (→ `["Alpine:edge",
+  "Alpine:vMAJOR.MINOR"]`, edge first — it's the channel the image actually
+  ships). `cves.run` passes those ahead of the bare `Alpine` seed/cache
+  fallback. Zero new dependencies; the bare-Alpine path for release-marker-less
+  images is unchanged.
 - **CVSS v4.0 supplemental-metric surfacing** — v4.0 base scores are now
   computed; the supplemental metrics (Safety, Automatable, Recovery, …) are
   parsed-and-ignored for scoring (correct, they don't affect the base score) but

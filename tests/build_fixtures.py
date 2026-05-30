@@ -326,6 +326,62 @@ def build_all() -> dict[str, str]:
         ],
     )
 
+    # alpine-edge-image (Rotation 33): an Alpine edge-channel image whose
+    # ``etc/alpine-release`` carries the literal string ``edge`` (Alpine's
+    # rolling-development branch). Detection must yield the ``Alpine:edge``
+    # ecosystem candidate so live OSV.dev queries against the edge channel
+    # resolve — before this rotation, edge images silently fell back to bare
+    # ``Alpine``. The apk db carries a busybox the edge-channel test seeds
+    # against ``Alpine:edge``.
+    digests["alpine-edge-image"] = build_oci_image(
+        FIXTURE_DIR / "alpine-edge-image.tar",
+        layers=[
+            {
+                "etc/alpine-release": b"edge\n",
+            },
+            {
+                "lib/apk/db/installed": (
+                    b"C:Q1bZZZ==\n"
+                    b"P:busybox\n"
+                    b"V:1.36.0-r0\n"
+                    b"A:x86_64\n"
+                    b"T:Size optimized toolbox of many common UNIX utilities\n"
+                    b"U:https://busybox.net/\n"
+                    b"L:GPL-2.0-only\n"
+                    b"\n"
+                ),
+            },
+        ],
+    )
+
+    # alpine-edge-prerelease-image (Rotation 33): an Alpine image whose
+    # ``etc/alpine-release`` carries a numbered version with a pre-release
+    # suffix (``3.20.0_alpha20240329``) — an in-development build of the
+    # next numbered release, distributed via the edge repos. Detection must
+    # yield BOTH ``Alpine:edge`` (the actual channel) AND ``Alpine:v3.20``
+    # (the upcoming numbered release) as ordered candidates so queries
+    # resolve regardless of which line the advisory was filed against.
+    digests["alpine-edge-prerelease-image"] = build_oci_image(
+        FIXTURE_DIR / "alpine-edge-prerelease-image.tar",
+        layers=[
+            {
+                "etc/alpine-release": b"3.20.0_alpha20240329\n",
+            },
+            {
+                "lib/apk/db/installed": (
+                    b"C:Q1bWWW==\n"
+                    b"P:busybox\n"
+                    b"V:1.36.0-r0\n"
+                    b"A:x86_64\n"
+                    b"T:Size optimized toolbox of many common UNIX utilities\n"
+                    b"U:https://busybox.net/\n"
+                    b"L:GPL-2.0-only\n"
+                    b"\n"
+                ),
+            },
+        ],
+    )
+
     # debian-release-image: exercises Debian release-qualified OSV resolution.
     # The base layer carries etc/debian_version ("12.4") in a *different* layer
     # than var/lib/dpkg/status, so the image-level release scan must find it

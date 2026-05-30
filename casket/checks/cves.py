@@ -77,6 +77,27 @@ free (json flatten, h1md bullets, SARIF result properties). Keys are omitted
 entirely when empty, so clean/seed findings and the existing tests are
 unaffected.
 
+[Worker decision: Alpine edge channel resolution — Rotation 33]
+POST_V01 listed "Alpine `edge` handling" as a not-yet-done candidate: edge
+images (``etc/alpine-release`` == literal ``edge``, or a numbered version
+carrying a pre-release suffix like ``3.20.0_alpha20240329`` / ``_rc1`` /
+``_pre1`` / ``_git…`` — in-development builds of the next numbered release,
+distributed via the ``edge`` repos) silently fell back to bare ``Alpine``
+under the Rotation 10 implementation: ``_parse_alpine_release`` returned
+``None`` on literal ``edge``, and a pre-release suffix was discarded so the
+numbered prefix alone was queried. OSV.dev keys edge advisories under the
+``Alpine:edge`` ecosystem (separate from the numbered ``Alpine:vMAJOR.MINOR``
+stable streams), so live CVE coverage for the rolling-development branch
+was effectively seed-only — exactly the regression Rotation 10 closed for
+numbered releases. This rotation closes the same gap for edge:
+``_parse_alpine_release_candidates`` recognises both shapes and emits the
+ordered candidate list (``Alpine:edge`` for the literal, both
+``Alpine:edge`` and the numbered ``Alpine:vMAJOR.MINOR`` — edge first — for
+a pre-release build), and ``run`` queries them ahead of the bare-``Alpine``
+fallback. ``query_batch`` already dedupes and skips falsy candidates, so
+the candidate list slots in cleanly. Zero new dependencies; the bare-Alpine
+seed/cache path is byte-for-byte unchanged for the release-marker-less case.
+
 [Worker decision: fixed-version remediation surfacing — Rotation 21]
 Rotation 19 surfaced the advisory and patch *URLs* from the OSV record, but not
 the single most actionable remediation field a scanner can give an operator:
@@ -118,6 +139,21 @@ _OS_RELEASE = "etc/os-release"
 # An Alpine release line looks like ``3.18.4`` (or rarely ``3.18``). We keep the
 # MAJOR.MINOR pair to build the OSV ecosystem qualifier ``Alpine:vMAJOR.MINOR``.
 _ALPINE_RELEASE_RE = re.compile(r"^(\d+)\.(\d+)(?:\.\d+)?")
+
+# Alpine's rolling-development branch (``edge``) ships images whose
+# ``etc/alpine-release`` is either the literal string ``edge`` or a numeric
+# version carrying a pre-release suffix like ``_alpha20240329`` / ``_rc1`` /
+# ``_pre1`` / ``_git20240212`` / ``_beta1`` (an in-development build of the
+# next numbered release, distributed via the ``edge`` repos). OSV.dev keys the
+# matching advisories under the ecosystem ``Alpine:edge`` (separate from the
+# numbered ``Alpine:vMAJOR.MINOR`` stable streams), so we recognise the channel
+# and add ``Alpine:edge`` to the candidate list. The bare-``Alpine`` fallback
+# is still appended last, so seed-DB / warm-cache resolution is unchanged.
+_ALPINE_EDGE_LITERAL_RE = re.compile(r"^edge\b", re.IGNORECASE)
+_ALPINE_PRERELEASE_SUFFIX_RE = re.compile(
+    r"_(alpha|beta|rc|pre|git)", re.IGNORECASE
+)
+_ALPINE_EDGE_ECOSYSTEM = "Alpine:edge"
 
 # A Debian version line looks like ``12.4`` or ``12`` (and sometimes a testing
 # codename like ``bookworm/sid`` — non-numeric, which we ignore). We keep the
@@ -215,11 +251,19 @@ def _parse_apk_installed(text: str) -> list[tuple[str, str]]:
 def _parse_alpine_release(text: str) -> str | None:
     """Derive the OSV ecosystem qualifier from an ``etc/alpine-release`` line.
 
-    The file holds a single version like ``3.18.4`` (sometimes ``3.18`` or with
-    a trailing ``_alpha``/edge marker). We extract MAJOR.MINOR and return the
-    OSV ecosystem qualifier ``Alpine:vMAJOR.MINOR`` (e.g. ``Alpine:v3.18``).
-    Returns ``None`` if no recognisable version is found — the caller then
-    falls back to the bare ``Alpine`` ecosystem.
+    The file holds a single version like ``3.18.4`` (sometimes ``3.18``). We
+    extract MAJOR.MINOR and return the OSV ecosystem qualifier
+    ``Alpine:vMAJOR.MINOR`` (e.g. ``Alpine:v3.18``). Returns ``None`` if no
+    numeric MAJOR.MINOR is found — the caller then falls back to the bare
+    ``Alpine`` ecosystem.
+
+    Note: a version with a pre-release suffix (``3.20.0_alpha20240329``) is
+    still recognised as numeric here and returns ``Alpine:v3.20``; the edge
+    nature of such a build is detected separately by
+    ``_parse_alpine_release_candidates`` and is what adds the
+    ``Alpine:edge`` candidate alongside it. Backwards-compatible:
+    ``_parse_alpine_release`` is preserved for callers that only need the
+    numbered-release qualifier.
     """
     for line in text.splitlines():
         m = _ALPINE_RELEASE_RE.match(line.strip())
@@ -228,22 +272,83 @@ def _parse_alpine_release(text: str) -> str | None:
     return None
 
 
-def _detect_alpine_ecosystem(image: Image) -> str | None:
-    """Scan an image for ``etc/alpine-release`` and return its ecosystem tag.
+def _parse_alpine_release_candidates(text: str) -> list[str]:
+    """Derive the ordered OSV ecosystem candidates from an ``etc/alpine-release``.
 
-    ``etc/alpine-release`` and ``lib/apk/db/installed`` can live in different
-    layers, so release detection is an image-level pass: the first layer that
-    carries a parseable release wins. Returns the release-qualified ecosystem
-    (e.g. ``Alpine:v3.18``) or ``None`` if no release marker is present.
+    Returns an *ordered* candidate list (most-specific first; the caller
+    appends bare ``Alpine`` as the final fallback). Three shapes are
+    recognised:
+
+    * a numbered release like ``3.18.4`` →
+      ``["Alpine:v3.18"]``
+    * a literal ``edge`` (Alpine's rolling-development branch) →
+      ``["Alpine:edge"]``
+    * a numbered version carrying a pre-release suffix (an in-development
+      build of the *next* numbered release, distributed via the edge repos)
+      such as ``3.20.0_alpha20240329`` or ``3.20.0_rc1`` →
+      ``["Alpine:edge", "Alpine:v3.20"]``. Edge is queried first because
+      these are the OSV vulns the image actually ships; the numbered
+      ``Alpine:vX.Y`` candidate covers the case where an advisory was filed
+      only against the upcoming stable line.
+
+    Returns ``[]`` (NOT a falsy candidate — the caller still adds the bare
+    ``Alpine`` fallback) when no recognisable line is found. Unrecognisable
+    or empty input degrades to ``[]`` rather than raising.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Edge-channel literal: ``edge`` (case-insensitive). No numeric
+        # qualifier to add; bare ``Alpine`` remains the final fallback.
+        if _ALPINE_EDGE_LITERAL_RE.match(stripped):
+            return [_ALPINE_EDGE_ECOSYSTEM]
+        m = _ALPINE_RELEASE_RE.match(stripped)
+        if not m:
+            continue
+        numbered = f"Alpine:v{m.group(1)}.{m.group(2)}"
+        # A numeric version with a pre-release suffix is an edge build of
+        # the next numbered release. Surface both candidates, edge first.
+        if _ALPINE_PRERELEASE_SUFFIX_RE.search(stripped):
+            return [_ALPINE_EDGE_ECOSYSTEM, numbered]
+        return [numbered]
+    return []
+
+
+def _detect_alpine_ecosystem(image: Image) -> str | None:
+    """Return the first release-qualified Alpine ecosystem found on an image.
+
+    Backwards-compatible thin wrapper over
+    ``_detect_alpine_ecosystem_candidates``. Returns the first candidate
+    (typically the numbered ``Alpine:vMAJOR.MINOR`` or ``Alpine:edge``),
+    or ``None`` if no release marker is present.
+
+    ``etc/alpine-release`` and ``lib/apk/db/installed`` often live in
+    different layers, so detection is an image-level pass.
+    """
+    candidates = _detect_alpine_ecosystem_candidates(image)
+    return candidates[0] if candidates else None
+
+
+def _detect_alpine_ecosystem_candidates(image: Image) -> list[str]:
+    """Return the ordered OSV ecosystem candidates for an Alpine image.
+
+    Image-level scan: ``etc/alpine-release`` and ``lib/apk/db/installed`` can
+    live in different layers, so we walk every layer and return the first
+    parseable release's candidates (most-specific first). The caller appends
+    bare ``Alpine`` as the final fallback.
+
+    Returns ``[]`` if no release marker is present (caller falls back to
+    bare ``Alpine`` only — unchanged behaviour for release-marker-less images).
     """
     for layer in image.layers:
         for path, _size, reader in layer.iter_files():
             if path == _ALPINE_RELEASE:
                 text = reader().decode("utf-8", errors="ignore")
-                qualified = _parse_alpine_release(text)
-                if qualified:
-                    return qualified
-    return None
+                candidates = _parse_alpine_release_candidates(text)
+                if candidates:
+                    return candidates
+    return []
 
 
 def _parse_debian_version(text: str) -> str | None:
@@ -490,11 +595,16 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
     client = osv_client or OSVClient()
     findings: list[Finding] = []
 
-    # Resolve the release-qualified Alpine ecosystem once per image. OSV.dev
-    # keys Alpine vulns under e.g. "Alpine:v3.18"; querying that (with a bare
-    # "Alpine" fallback for the seed DB / warm cache) is what makes live Alpine
-    # CVE lookups actually work. None when the image carries no release marker.
-    alpine_ecosystem = _detect_alpine_ecosystem(image)
+    # Resolve the release-qualified Alpine ecosystem candidates once per image.
+    # OSV.dev keys Alpine vulns under e.g. "Alpine:v3.18" or "Alpine:edge"; we
+    # query the most-specific candidate first (with a bare "Alpine" fallback
+    # for the seed DB / warm cache) — what makes live Alpine CVE lookups
+    # actually work. Edge images (etc/alpine-release == "edge" or carrying a
+    # pre-release suffix like "_alpha20240329") yield "Alpine:edge"; numbered
+    # releases yield "Alpine:vMAJOR.MINOR"; an edge build of a numbered release
+    # yields both, edge-first. ``[]`` when the image carries no release marker
+    # (caller falls back to bare "Alpine" only — unchanged behaviour).
+    alpine_ecosystems = _detect_alpine_ecosystem_candidates(image)
 
     # Same release-qualified resolution for Debian/Ubuntu: OSV.dev keys Debian
     # vulns under e.g. "Debian:12". We query that first (live API) with a bare
@@ -513,7 +623,13 @@ def run(image: Image, *, osv_client: Any = None) -> list[Finding]:
     jobs: list[tuple[list[str], str, str]] = []
     for pkg in packages:
         if pkg.ecosystem == "Alpine":
-            candidates = [alpine_ecosystem, "Alpine"]
+            # One or more release-qualified candidates (numbered, edge, or
+            # both for an edge build of a numbered release), bare "Alpine"
+            # always last as the seed-DB / warm-cache fallback. query_batch
+            # dedupes and skips falsy candidates, so an empty
+            # ``alpine_ecosystems`` collapses to just ["Alpine"] — the
+            # pre-existing behaviour for release-marker-less images.
+            candidates = [*alpine_ecosystems, "Alpine"]
         elif pkg.ecosystem == "Debian":
             candidates = [debian_ecosystem, "Debian"]
         else:

@@ -937,6 +937,23 @@ than the package database — and queries the release-qualified ecosystem
 seed DB and on-disk cache are keyed) when no release marker is present. This is
 what makes live Alpine CVE lookups against the OSV.dev API actually resolve.
 
+Alpine's rolling-development branch (**`edge`**) is recognised separately.
+OSV.dev keys edge advisories under the distinct ecosystem `Alpine:edge`, so
+`casket` detects edge images and queries that channel ahead of the bare-Alpine
+fallback. Two on-disk shapes are recognised:
+
+| `etc/alpine-release` | ordered candidates |
+|---|---|
+| `3.18.4` (a numbered release) | `Alpine:v3.18` → `Alpine` |
+| `edge` (the literal edge marker, case-insensitive) | `Alpine:edge` → `Alpine` |
+| `3.20.0_alpha20240329` / `_rc1` / `_pre1` / `_git…` / `_beta1` (an in-development build of the next numbered release, shipped via the edge repos) | `Alpine:edge` → `Alpine:v3.20` → `Alpine` |
+
+The edge candidate is queried first for pre-release builds because that is
+the channel the image actually ships; the numbered candidate covers the case
+where an advisory is filed only against the upcoming stable line. The reported
+`detail["ecosystem"]` stays the stable bare `Alpine` tag for output uniformity
+in every case — the qualifier is a query-time concern only.
+
 The same release-qualified resolution applies to **Debian/Ubuntu**: OSV.dev
 keys Debian vulnerabilities under `Debian:12` (the major release number), not a
 bare `Debian`. `casket` reads the release from `etc/debian_version`, falling
