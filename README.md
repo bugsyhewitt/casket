@@ -708,6 +708,7 @@ performs and caches):
 | `cvss_score` | OSV `severity[].score` (CVSS vector, scored by `casket`) | the numeric base score (e.g. `9.8`) — where the finding sits *within* its severity band |
 | `cvss_version` | OSV `severity[].type` / vector prefix | which CVSS revision produced the score: `"2.0"`, `"3.x"`, or `"4.0"` |
 | `cvss_vector` | OSV `severity[].score` | the source vector string the score and band were computed from |
+| `cvss_supplemental` | CVSS v4.0 Supplemental Metric Group (FIRST spec section 2.4) | decoded extrinsic triage signal (Safety, Automatable, Recovery, Value Density, Response Effort, Provider Urgency) — does not affect the base score |
 | `fixed_versions` | OSV `affected[].ranges[].events[].fixed` | the version(s) to upgrade to that resolve the vuln |
 | `aliases` | OSV `aliases` | the full id list for the same vuln (CVE + GHSA + distro ids), de-duplicated |
 | `fix_urls` | OSV `references` type `FIX` | the patch / remediation commit(s) |
@@ -733,6 +734,31 @@ attack shape that produced it (network vs. local, privileges required, impact).
 These three keys are **omitted together** when the OSV record carries no scorable
 CVSS vector (severity then came from the record's `database_specific` string or
 the conservative default, so there is no number to surface).
+
+For CVE findings scored from a **CVSS v4.0** vector that carries any
+[Supplemental Metric Group](https://www.first.org/cvss/v4-0/specification-document)
+values, `casket` also surfaces a `cvss_supplemental` object decoding those
+metrics into operator-readable labels:
+
+| key | source metric | values |
+|---|---|---|
+| `safety` | `S` — impact on human Safety (IEC 61508) | `negligible`, `present` |
+| `automatable` | `AU` — can the attack be automated across many targets? | `no`, `yes` |
+| `recovery` | `R` — system recoverability after exploit | `automatic`, `user`, `irrecoverable` |
+| `value_density` | `V` — density of the controlled resource | `diffuse`, `concentrated` |
+| `response_effort` | `RE` — effort to deploy the fix | `low`, `moderate`, `high` |
+| `provider_urgency` | `U` — vendor-asserted patch urgency (TLP-coloured) | `clear`, `green`, `amber`, `red` |
+
+These metrics convey *extra extrinsic context* that the base score deliberately
+does not encode (a `7.5` with `safety: present` is qualitatively different from
+a `7.5` with `safety: negligible`; `provider_urgency: red` is a vendor's own
+"patch now" signal). They are **parsed-and-ignored for scoring** — the band, the
+`--fail-on` gate, and the SARIF `security-severity` float are byte-identical
+with or without them. Individual keys are omitted when the source metric is
+absent or `X` (Not Defined), and the whole block is omitted when the v4.0
+vector is base-only (the common case for OSV records), so default output is
+unchanged. Only v4.0 carries a Supplemental Metric Group; v3 and v2 findings
+never have a `cvss_supplemental` key.
 
 All of these fields flow through every output format: top-level keys in `json`,
 bullets in `h1md`, and `result.properties` entries in `sarif`.
