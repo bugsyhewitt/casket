@@ -113,6 +113,50 @@ rules:
     severity: medium
     regex: "SK[0-9a-f]{32}"
 
+  # ---------------------------------------------------------------------------
+  # Cloud / AI provider patterns (POST_V01 extended — Rotation 37).
+  # Azure Storage Account keys, OpenAI / Anthropic API keys, Databricks PATs,
+  # and HashiCorp Vault service tokens are all structurally unambiguous when
+  # matched in context and represent critical secret classes commonly baked
+  # into container images via environment files, config blobs, or model code.
+  # ---------------------------------------------------------------------------
+
+  - id: azure_storage_key
+    title: "Azure Storage Account key"
+    severity: critical
+    # Azure storage account keys are 88-character base64 strings ending with
+    # "==" and almost always appear next to a key-assignment keyword.
+    # Context-guard ("AccountKey=") keeps false-positive rate negligible.
+    regex: "AccountKey=[A-Za-z0-9+/]{86}=="
+
+  - id: openai_api_key
+    title: "OpenAI API key"
+    severity: critical
+    # Classic "sk-" keys (51 chars after prefix) and newer project-scoped
+    # "sk-proj-" keys (both formats that OpenAI has issued).
+    regex: "sk-(?:proj-)?[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}|sk-proj-[A-Za-z0-9_\\-]{100,}"
+
+  - id: anthropic_api_key
+    title: "Anthropic API key"
+    severity: critical
+    # Anthropic API keys begin with "sk-ant-" followed by api-/admin- prefixed
+    # base64url segments separated by underscores.
+    regex: "sk-ant-(?:api|admin)[0-9]*-[A-Za-z0-9_\\-]{80,}"
+
+  - id: databricks_token
+    title: "Databricks personal access token"
+    severity: high
+    # Databricks PATs begin with "dapi" and consist of 32 lowercase hex chars.
+    regex: "dapi[a-f0-9]{32}"
+
+  - id: hashicorp_vault_token
+    title: "HashiCorp Vault / HCP service token"
+    severity: critical
+    # HCP Vault service tokens: hvs.* (service) or hvb.* (batch).
+    # Require a minimum of 24 chars after the prefix to avoid matching short
+    # test/placeholder strings.
+    regex: "hv[sb]\\.[A-Za-z0-9_\\-]{24,}"
+
   - id: high_entropy_string
     title: "High-entropy string (possible secret/token)"
     severity: medium

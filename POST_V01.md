@@ -1047,6 +1047,42 @@ daemonless / no-SBOM / network-free architecture, and touches no
 sort/render/gate/diff internals beyond slotting one more filter into the
 established pipeline — the highest-value, lowest-risk reporting knob remaining.
 
+### Item 23 — Expanded cloud/AI provider credential patterns (Rotation 37)
+
+**Priority: MEDIUM. ✅ IMPLEMENTED (Phase 2, Rotation 37).**
+
+**The gap.** The credential ruleset grew from 4 patterns (v0.1) to 19 with
+POST_V01 Item 6 (Rotation 5). But the three largest credential classes in
+2026 container images — Azure Storage Account keys, OpenAI/Anthropic API keys,
+and HashiCorp Vault tokens — were all missing. Teams shipping AI applications
+routinely bake `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` into images; Azure
+storage keys appear in connection strings throughout cloud-native apps; and
+Vault tokens are a common service-credential delivery mechanism. Databricks PATs
+(`dapi…`) appear in ML pipeline images. All five are structurally unambiguous.
+
+**What shipped.** Five new regex rules in `casket/ruledata/creds.yaml`:
+- `azure_storage_key` (`critical`): `AccountKey=` context-guard + 86 base64 chars + `==`
+- `openai_api_key` (`critical`): classic `sk-…T3BlbkFJ…` format (40 chars total)
+- `anthropic_api_key` (`critical`): `sk-ant-api…` prefix + 80-char url-safe base64
+- `databricks_token` (`high`): `dapi` prefix + 32 lowercase hex chars
+- `hashicorp_vault_token` (`critical`): `hvs.` / `hvb.` prefix + ≥24 url-safe chars
+
+The multi-secrets-image fixture was extended with fabricated (non-real) examples
+of each pattern. 25 new tests in `tests/test_creds_rules.py` cover: ruleset
+completeness (all 5 rule ids present with required fields), per-rule firing
+against the fixture, all-rules-fire-together, severity mapping, and no false
+positives on a clean image. Full suite: 569 tests pass. Zero new dependencies.
+README updated with Azure/AI/Vault rows in the credential-patterns table and the
+top-of-file provider list.
+
+**Why this was the pick.** The roster `next_planned` explicitly named
+`azure_storage_key` and `openai_api_key` as the next credential gap. With AI
+applications now a first-class workload in container images, credential patterns
+for the two leading AI providers + Azure + Databricks + Vault close the most
+common high-value secrets class that casket's ruleset was missing. All five have
+structural prefixes that keep false-positive rates negligible — no entropy
+analysis required.
+
 ### Candidate next items (not yet done)
 - **GHSA / NVD reference enrichment** — cross-link CVE findings to GHSA
   identifiers (GitHub Advisory DB) or surface NVD `references` (exploit / patch
