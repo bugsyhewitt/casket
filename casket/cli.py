@@ -38,6 +38,7 @@ from casket.scanner import (
     filter_by_severity,
     filter_by_severity_band,
     filter_by_vex,
+    filter_fix_available,
     load_image,
     resolve_checks,
     run_checks,
@@ -347,6 +348,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--only-actionable",
+        action="store_true",
+        help=(
+            "report only CVE findings that have a known fix (i.e. at least one "
+            "patched version is published in the OSV record). CVEs with no "
+            "available fix are dropped from the report and do not count toward "
+            "--fail-on. creds and misconfig findings always survive — their "
+            "remediation is inherent (remove the secret, fix the Dockerfile). "
+            "Mirrors Trivy's --ignore-unfixed and Grype's fixed-status filter: "
+            "the standard first-pass triage gate that shows you only what you "
+            "can actually upgrade right now. Omitting the flag keeps every "
+            "finding (default)."
+        ),
+    )
+    parser.add_argument(
         "--compare",
         metavar="BASELINE.json",
         help=(
@@ -539,6 +555,12 @@ def main(argv: list[str] | None = None) -> int:
         set(args.suppress_severity) if args.suppress_severity else None
     )
     findings = filter_by_severity_band(findings, severity_suppressed)
+    # --only-actionable drops CVE findings that have no published fix: only keep
+    # CVEs whose OSV record carries at least one patched version. creds/misconfig
+    # always survive. Like the other report filters it shapes the *reported* set
+    # before the gate / diff, so an unfixed CVE dropped here never secretly trips
+    # the build gate. Absent (the default) it is a no-op.
+    findings = filter_fix_available(findings, args.only_actionable)
 
     # --stats attaches a component-count inventory summary (total packages,
     # per-ecosystem breakdown, vulnerable-package count) to the report. Computed

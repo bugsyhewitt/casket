@@ -69,6 +69,7 @@ casket --image REF
        [--vex VEX.json] [--vex-max-age DAYS]
        [--suppress-ecosystem ECOSYSTEM]
        [--purl-filter PATTERN]
+       [--only-actionable]
        [--compare BASELINE.json] [--diff-format {json,h1md}]
        [--group-by-package]
        [--stats]
@@ -180,6 +181,45 @@ casket --image ./myapp.tar --checks all --suppress-severity high
   filter shapes the **reported** set *before* the `--fail-on` gate and
   `--compare` diff run, so a muted band neither shows up nor secretly trips the
   build. It composes with `--min-severity` as an independent stage.
+
+### Focusing on fixable CVEs with `--only-actionable`
+
+Container images routinely carry OS-package CVEs for which no patch has been
+published yet. On a busy `debian`/`ubuntu`/`alpine` base image these *unfixed*
+CVEs can make up the majority of a scan report, obscuring the vulnerabilities you
+can actually remediate today.
+
+`--only-actionable` mirrors Trivy's `--ignore-unfixed` and Grype's fixed-status
+filter: it drops CVE findings that have **no known fix**, keeping only those
+where the OSV record has published at least one patched version
+(`detail["fixed_versions"]` is non-empty). Credentials and misconfig findings
+always survive — their remediation is inherent (remove the secret, fix the
+Dockerfile), so they are always actionable by nature.
+
+```bash
+# report only CVEs that have a patch available
+casket --image ./myapp.tar --checks cves --only-actionable
+
+# combine with --min-severity to focus on fixable high+ CVEs
+casket --image ./myapp.tar --checks all --min-severity high --only-actionable
+
+# combine with --fail-on to break the build only on fixable criticals
+casket --image ./myapp.tar --checks all --only-actionable --fail-on critical
+```
+
+Behaviour and guarantees:
+
+- **CVE findings only.** Credentials and misconfig findings are never dropped.
+- **Consistent with the gate.** Like `--min-severity` / `--min-epss` / `--vex`,
+  the filter shapes the **reported** set *before* the `--fail-on` gate and
+  `--compare` diff, so a dropped unfixed CVE never secretly trips the build —
+  what fails the build matches what you see.
+- **Composable.** Stacks with every other filter; apply as many simultaneously as
+  needed.
+- **No network.** `fixed_versions` is extracted from the cached OSV record — no
+  new API calls.
+
+---
 
 ### Prioritising by exploitation likelihood with EPSS and `--min-epss`
 
