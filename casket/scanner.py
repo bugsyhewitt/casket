@@ -569,6 +569,53 @@ def filter_by_severity_band(
     return [f for f in findings if f.severity not in suppressed]
 
 
+def filter_fix_available(
+    findings: list[Finding], only_actionable: bool = False
+) -> list[Finding]:
+    """Drop CVE findings that have no known fix when ``only_actionable`` is set.
+
+    Container images routinely carry large numbers of OS-package CVEs for which
+    upstream has not yet published a patch (unfixed / unpatched vulnerabilities).
+    On a busy Debian/Ubuntu image these can make up the majority of a scan report,
+    drowning out the findings an operator can actually remediate.
+
+    ``--only-actionable`` applies the simple, high-signal triage heuristic that
+    practitioners reach for first: *"show me only what I can fix right now."*
+    Trivy ships ``--ignore-unfixed`` for exactly this; Grype calls it the ``fixed``
+    status filter. casket expresses it as:
+
+      - A CVE finding is *actionable* if its ``detail["fixed_versions"]`` is a
+        non-empty list — the OSV record published at least one patched version, so
+        there is a concrete upgrade path.
+      - A CVE finding with no ``fixed_versions`` key, or an empty list, is *not yet
+        actionable* and is dropped under this flag.
+      - ``creds`` and ``misconfig`` findings always survive — they have no
+        ``fixed_versions`` field, but the remediation is inherent (remove the
+        secret, fix the Dockerfile), so they are *always* actionable by nature.
+
+    When ``only_actionable`` is ``False`` (the default, no flag given) every
+    finding is returned unchanged, preserving casket's original report-everything
+    behaviour.
+
+    Like all other report filters this shapes the reported set before the
+    exit-code gate / ``--compare`` diff, so what fails the build matches what the
+    operator sees — an unfixed CVE dropped here never secretly trips the gate.
+    """
+    if not only_actionable:
+        return list(findings)
+
+    result: list[Finding] = []
+    for f in findings:
+        if f.category == "cve":
+            fixed = f.detail.get("fixed_versions")
+            if fixed:
+                result.append(f)
+        else:
+            # creds and misconfig are always actionable.
+            result.append(f)
+    return result
+
+
 def exit_code(findings: list[Finding], fail_on: str = "any") -> int:
     """Compute the process exit code for a scan, gated by severity threshold.
 
