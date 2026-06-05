@@ -541,6 +541,10 @@ def build_all() -> dict[str, str]:
     _lc = "abcdefghijklmnopqrstuvwxyz"
     _hex32 = "0123456789abcdef0123456789abcdef"
     _b36 = (_lc + "0123456789")  # 36 chars, the GitHub/npm token body length
+    # base64 alphabet (url-safe) used for Azure/OpenAI/Anthropic/Vault tokens —
+    # assembled from fixed segments to avoid emitting real-looking secrets inline.
+    _b64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    _b64_86 = (_b64_chars * 2)[:86]  # 86 chars for Azure storage account key body
     secrets_lines = [
         "GITHUB_PAT=" + "ghp_" + _b36,
         "GITHUB_OAUTH=" + "gho_" + _b36,
@@ -557,6 +561,20 @@ def build_all() -> dict[str, str]:
         "MAILCHIMP=" + _hex32 + "-us12",
         "TWILIO_SID=" + "AC" + _hex32,
         "TWILIO_API_KEY=" + "SK" + _hex32,
+        # Cloud / AI provider patterns (Rotation 37).
+        # Azure: "AccountKey=" prefix + 86 base64 chars + "=="
+        "AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;"
+        + "AccountName=examplestore;AccountKey=" + _b64_86 + "==",
+        # OpenAI: classic key format — "sk-" + 20 alphanum + "T3BlbkFJ" + 20 alphanum
+        "OPENAI_API_KEY=" + "sk-" + (_lc + "0123456789")[:20]
+        + "T3BlbkFJ" + (_lc + "0123456789")[:20],
+        # Anthropic: "sk-ant-api01-" prefix + 80 url-safe base64 chars
+        "ANTHROPIC_API_KEY=" + "sk-ant-" + "api01-"
+        + (_lc + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" * 3)[:80],
+        # Databricks: "dapi" prefix + 32 lowercase hex chars
+        "DATABRICKS_TOKEN=" + "dapi" + _hex32,
+        # HashiCorp Vault service token: "hvs." prefix + 24 url-safe base64 chars
+        "VAULT_TOKEN=" + "hvs." + (_lc + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")[:24],
     ]
     secrets_env = ("\n".join(secrets_lines) + "\n").encode()
     # GCP service-account key marker, assembled to avoid a literal in source.

@@ -6,7 +6,8 @@
 *which layer* introduced each one:
 
 - **leaked credentials** — AWS keys, provider tokens (GitHub, Slack, Stripe,
-  SendGrid, npm, GCP, Twilio, …), JWTs, private keys, and high-entropy secrets
+  SendGrid, npm, GCP, Twilio, Azure, OpenAI, Anthropic, Databricks, Vault, …),
+  JWTs, private keys, and high-entropy secrets
 - **known-vulnerable packages** — PyPI, Debian, Alpine, and RPM (RHEL/Fedora)
   packages resolved against [OSV.dev](https://osv.dev)
 - **misconfigurations** — `USER root`, exposed ports (with sensitive service
@@ -1001,6 +1002,9 @@ High-precision patterns (no entropy, negligible false-positive rate):
 | Messaging | Slack (`xox[baprs]-`), SendGrid (`SG.`), Twilio account/API SIDs |
 | Packaging | npm automation token (`npm_`), Docker Hub PAT (`dckr_pat_`) |
 | Cloud / misc | GCP service-account key JSON, Heroku API key, Mailchimp key |
+| Azure | Storage Account key (`AccountKey=…==`, `critical`) |
+| AI / ML | OpenAI API key (`sk-…T3BlbkFJ…`), Anthropic API key (`sk-ant-api…`), Databricks PAT (`dapi…`, `high`) |
+| Secrets mgmt | HashiCorp Vault / HCP service token (`hvs.` / `hvb.`, `critical`) |
 | Generic | API token/key assignments, JWTs (`eyJ…`), private-key blocks |
 
 Each pattern carries its own severity (e.g. a Stripe live secret or GCP
