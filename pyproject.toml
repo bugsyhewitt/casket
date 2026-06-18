@@ -24,6 +24,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    # casket's test modules import these at collection time.
+    # Listing them in [dev] means `pip install -e ".[dev]"` is
+    # enough for `pytest -q` to collect without ModuleNotFoundError.
+    # See tests/test_install_sanity.py for the regression gate.
+    "httpx>=0.27",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
@@ -39,5 +45,8 @@ packages = ["casket", "casket.checks", "casket.ruledata"]
 "casket.ruledata" = ["*.yaml", "*.json"]
 
 [tool.pytest.ini_options]
+markers = [
+    "install_sanity: v0.1 fresh-venv install contract (runs `pip install -e .[dev]`; safe but slow)",
+]
 testpaths = ["tests"]
 addopts = "-q"
