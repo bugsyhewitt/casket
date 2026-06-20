@@ -29,9 +29,8 @@ from pathlib import Path
 
 import pytest
 
-# Pin to the v0.1 version (bridge pins current state; casket-003
-# will flip this to "1.0.0" in a separate packet).
-EXPECTED_VERSION = "0.1.0"
+# pinned at 1.0.0 for v1.0 RELEASE
+EXPECTED_VERSION = "1.0.0"
 
 # 12 non-__init__ public modules at the top of casket/. Verified
 # live at this wake: `ls casket/*.py | grep -v __init__` returns
@@ -233,3 +232,18 @@ def test_installed_wheel_check_categories_validate(fresh_venv_with_wheel):
             f"--checks {check!r} did not parse (--help exited 0 but stdout missing --checks: "
             f"{result.stdout[:300]!r})"
         )
+
+
+@pytest.mark.ship_gate
+def test_changelog_exists_with_v1_0_0_entry():
+    """CHANGELOG.md exists at repo root with `## [1.0.0] - 2026-06-20` entry."""
+    changelog = _project_root() / "CHANGELOG.md"
+    assert changelog.is_file(), f"CHANGELOG.md not found at {changelog}"
+    text = changelog.read_text(encoding="utf-8")
+    # Keep-a-Changelog v1.1.0 top-level heading format
+    assert "## [1.0.0]" in text, (
+        f"CHANGELOG.md missing top-level `## [1.0.0]` entry; "
+        f"first 500 chars: {text[:500]!r}"
+    )
+    # The entry MUST be dated 2026-06-20 (today's release date)
+    assert "2026-06-20" in text, "CHANGELOG.md `## [1.0.0]` entry missing 2026-06-20 date"
