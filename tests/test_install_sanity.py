@@ -50,7 +50,7 @@ def test_dev_extra_pulls_runtime_deps():
     import casket.checks.cves  # noqa: F401
     import casket.checks.misconfig  # noqa: F401
     # Version sanity: casket.__version__ must match pyproject.toml.
-    assert casket.__version__ == "0.1.0"
+    assert casket.__version__ == "1.0.0"
 
 
 @pytest.mark.install_sanity
